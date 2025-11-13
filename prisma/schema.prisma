@@ -1,0 +1,54 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+
+model Trabajador {
+  id_trabajador Int            @id @default(autoincrement())
+  nombre        String
+  email         String         @unique
+  passwordHash  String?        // null si solo usa Google
+  googleId      String?        @unique
+  status        Boolean        @default(true)
+  createdAt     DateTime       @default(now())
+  
+  refreshTokens RefreshToken[]
+  tickets       Ticket[] 
+}
+
+model RefreshToken {
+  id           Int         @id @default(autoincrement())
+  tokenHash    String
+  expiresAt    DateTime
+  createdAt    DateTime    @default(now())
+
+  trabajador   Trabajador  @relation(fields: [trabajadorId], references: [id_trabajador], onDelete: Cascade)
+  trabajadorId Int
+}
+
+
+model Ticket {
+  id_ticket       Int         @id @default(autoincrement())
+  subject         String
+  description     String
+  categoria       String      // "contabilidad" | "tributario" | "otros"
+  estado          String      // "open", "pending", "resolved"... (puedes mapear desde Freshdesk)
+  prioridad       Int?        // 1–4 en Freshdesk
+  requesterEmail  String
+  freshdeskId     Int?        @unique
+  trabajador      Trabajador? @relation(fields: [trabajadorId], references: [id_trabajador])
+  trabajadorId    Int?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+}
