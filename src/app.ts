@@ -4,13 +4,12 @@ import cors from 'cors';
 import morgan from 'morgan';
 import cookieParser from 'cookie-parser';         
 import routes from './routes.js';
-import { env } from './config/env.js';
 import { errorHandler } from './middlewares/error.middleware.js';
 export const app = express();
 import "dotenv/config";
 
 app.use(cors({
-    origin: 'http://localhost:5173',
+    origin:   'https://intranet-cintax.netlify.app',
     methods: ['GET','POST','PUT','DELETE'],
     credentials: true,
     allowedHeaders: ['Content-Type','Authorization']

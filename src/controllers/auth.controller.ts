@@ -409,10 +409,7 @@ export const createTicket = async (req: Request, res: Response) => {
 
 export const syncTickets = async (req: Request, res: Response) => {
   try {
-    const { pages } = req.body as { pages?: number };
-    const maxPages = pages ?? 3; // por defecto 3 páginas
-
-    const count = await syncTicketsFromFreshdesk(maxPages);
+    const count = await syncTicketsFromFreshdesk(); // sin maxPages
 
     res.json({
       message: "Sincronización completada",

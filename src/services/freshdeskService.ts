@@ -9,7 +9,7 @@ const FRESHDESK_API_KEY = process.env.FRESHDESK_API_KEY!;
 
 /** Obtiene una página de tickets desde Freshdesk */
 async function fetchFreshdeskTicketsPage(page: number, perPage = 100) {
-  const url = `${FRESHDESK_BASE_URL}/api/v2/tickets?per_page=${perPage}&page=${page}`;
+  const url = `${FRESHDESK_BASE_URL}/api/v2/tickets?per_page=${perPage}&page=${page}&include=requester`;
 
   const res = await axios.get(url, {
     auth: {
@@ -23,42 +23,40 @@ async function fetchFreshdeskTicketsPage(page: number, perPage = 100) {
 
 /** Mapeo de ticket Freshdesk -> modelo Prisma */
 function mapFreshdeskTicketToPrisma(ticket: any) {
+  const requesterEmail =
+    ticket.requester?.email ||   // si viene con include=requester
+    ticket.email ||              // por si Freshdesk lo expone directo
+    ticket.from_email ||         // algunos orígenes lo traen así
+    "sin-correo@cintax.cl";
+
   return {
     freshdeskId: ticket.id,
     subject: ticket.subject ?? "Sin asunto",
     description: ticket.description_text ?? ticket.description ?? "",
     categoria: ticket.custom_fields?.cf_categoria ?? "otros",
-    // Aquí podrías seguir guardando el "status" numérico si quieres
     estado: String(ticket.status ?? "2"),
     prioridad: ticket.priority ?? null,
-    requesterEmail: ticket.requester_email ?? "sin-correo@cintax.cl",
+    requesterEmail,
   };
 }
-
 /**
  * Sincroniza tickets desde Freshdesk.
  * - Upsertea todos los tickets que vienen.
  * - BORRA de la DB los tickets con freshdeskId que ya no existen en Freshdesk
  *   (solo si se alcanzaron a leer TODAS las páginas).
  */
-export async function syncTicketsFromFreshdesk(maxPages = 3, perPage = 100) {
+// src/services/freshdeskService.ts
+export async function syncTicketsFromFreshdesk(perPage = 100) {
   let totalProcessed = 0;
   const freshdeskIdsVistos: number[] = [];
-  let truncadoPorMaxPages = false;
 
-  for (let page = 1; page <= maxPages; page++) {
+  let page = 1;
+  while (true) {
     const fdTickets = await fetchFreshdeskTicketsPage(page, perPage);
 
     if (!fdTickets.length) {
-      // No hay más tickets en Freshdesk → llegamos al final real
-      truncadoPorMaxPages = false;
+      // No hay más tickets en Freshdesk
       break;
-    }
-
-    // Si justo llenamos la página y además llegamos al límite de maxPages,
-    // asumimos que puede haber más tickets que NO estamos leyendo.
-    if (fdTickets.length === perPage && page === maxPages) {
-      truncadoPorMaxPages = true;
     }
 
     for (const t of fdTickets) {
@@ -83,14 +81,17 @@ export async function syncTicketsFromFreshdesk(maxPages = 3, perPage = 100) {
 
       totalProcessed++;
     }
+
+    // Si la página viene "incompleta", sabemos que es la última
+    if (fdTickets.length < perPage) break;
+
+    page++;
   }
 
-  // Solo borramos si NO hemos truncado por maxPages,
-  // es decir, si estamos razonablemente seguros de haber listado todos.
-  if (!truncadoPorMaxPages && freshdeskIdsVistos.length > 0) {
+  // AHORA sí podemos borrar todo lo que ya no existe en Freshdesk
+  if (freshdeskIdsVistos.length > 0) {
     await prisma.ticket.deleteMany({
       where: {
-        // solo los tickets que vienen de Freshdesk
         freshdeskId: {
           not: null,
           notIn: freshdeskIdsVistos,
