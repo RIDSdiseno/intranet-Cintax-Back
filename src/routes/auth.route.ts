@@ -11,7 +11,7 @@ r.post("/google", googleLoginTrabajador);     // login con Google
 r.post("/login", loginTrabajador)
 r.post("/logout", authGuard, logoutTrabajador);
 
-r.post("/sync-freshdesk",syncTickets)
+r.post("/sync-freshdesk",authGuard,syncTickets)
 r.get("/getTickets",authGuard,listTickets)
 r.post("/createTicket",authGuard,createTicket)
 

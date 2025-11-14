@@ -364,7 +364,7 @@ export const listTickets = async (req: Request, res: Response) => {
       },
     });
 
-    return res.json(tickets);
+    return res.json({tickets});
   } catch (err) {
     console.error("listTickets error:", err);
     return res.status(500).json({ error: "Error interno" });

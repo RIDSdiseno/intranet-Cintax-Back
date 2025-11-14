@@ -7,51 +7,59 @@ const prisma = new PrismaClient();
 const FRESHDESK_BASE_URL = process.env.FRESHDESK_BASE_URL!;
 const FRESHDESK_API_KEY = process.env.FRESHDESK_API_KEY!;
 
-/**
- * Hace una llamada a la API de Freshdesk para obtener tickets (paginado).
- * Freshdesk: GET /api/v2/tickets?per_page=100&page=1
- */
+/** Obtiene una página de tickets desde Freshdesk */
 async function fetchFreshdeskTicketsPage(page: number, perPage = 100) {
   const url = `${FRESHDESK_BASE_URL}/api/v2/tickets?per_page=${perPage}&page=${page}`;
 
   const res = await axios.get(url, {
     auth: {
       username: FRESHDESK_API_KEY,
-      // Freshdesk usa Basic Auth: API_KEY como user y 'X' como password
-      password: "X",
+      password: "X", // Freshdesk: API_KEY como user y "X" como pass
     },
   });
 
-  return res.data as any[]; // array de tickets de Freshdesk
+  return res.data as any[];
 }
 
-/**
- * Mapea un ticket de Freshdesk a los campos de tu modelo Ticket.
- * Aquí haces la traducción de estados/categorías/prioridades.
- */
+/** Mapeo de ticket Freshdesk -> modelo Prisma */
 function mapFreshdeskTicketToPrisma(ticket: any) {
   return {
     freshdeskId: ticket.id,
     subject: ticket.subject ?? "Sin asunto",
     description: ticket.description_text ?? ticket.description ?? "",
-    categoria: ticket.custom_fields?.cf_categoria ?? "otros", // ejemplo
-    estado: String(ticket.status ?? "open"),
+    categoria: ticket.custom_fields?.cf_categoria ?? "otros",
+    // Aquí podrías seguir guardando el "status" numérico si quieres
+    estado: String(ticket.status ?? "2"),
     prioridad: ticket.priority ?? null,
     requesterEmail: ticket.requester_email ?? "sin-correo@cintax.cl",
   };
 }
 
 /**
- * Sincroniza (importa/actualiza) tickets desde Freshdesk a la base local.
- * Devuelve el número de tickets procesados.
+ * Sincroniza tickets desde Freshdesk.
+ * - Upsertea todos los tickets que vienen.
+ * - BORRA de la DB los tickets con freshdeskId que ya no existen en Freshdesk
+ *   (solo si se alcanzaron a leer TODAS las páginas).
  */
-export async function syncTicketsFromFreshdesk(maxPages = 3) {
+export async function syncTicketsFromFreshdesk(maxPages = 3, perPage = 100) {
   let totalProcessed = 0;
+  const freshdeskIdsVistos: number[] = [];
+  let truncadoPorMaxPages = false;
 
   for (let page = 1; page <= maxPages; page++) {
-    const fdTickets = await fetchFreshdeskTicketsPage(page);
+    const fdTickets = await fetchFreshdeskTicketsPage(page, perPage);
 
-    if (!fdTickets.length) break; // no hay más páginas
+    if (!fdTickets.length) {
+      // No hay más tickets en Freshdesk → llegamos al final real
+      truncadoPorMaxPages = false;
+      break;
+    }
+
+    // Si justo llenamos la página y además llegamos al límite de maxPages,
+    // asumimos que puede haber más tickets que NO estamos leyendo.
+    if (fdTickets.length === perPage && page === maxPages) {
+      truncadoPorMaxPages = true;
+    }
 
     for (const t of fdTickets) {
       const data = mapFreshdeskTicketToPrisma(t);
@@ -69,8 +77,26 @@ export async function syncTicketsFromFreshdesk(maxPages = 3) {
         },
       });
 
+      if (data.freshdeskId != null) {
+        freshdeskIdsVistos.push(data.freshdeskId);
+      }
+
       totalProcessed++;
     }
+  }
+
+  // Solo borramos si NO hemos truncado por maxPages,
+  // es decir, si estamos razonablemente seguros de haber listado todos.
+  if (!truncadoPorMaxPages && freshdeskIdsVistos.length > 0) {
+    await prisma.ticket.deleteMany({
+      where: {
+        // solo los tickets que vienen de Freshdesk
+        freshdeskId: {
+          not: null,
+          notIn: freshdeskIdsVistos,
+        },
+      },
+    });
   }
 
   return totalProcessed;
