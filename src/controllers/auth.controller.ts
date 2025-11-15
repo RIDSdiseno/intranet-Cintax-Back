@@ -470,12 +470,24 @@ export const listCintax2025Folders = async (req: Request, res: Response) => {
 
     const drive = await getDriveClientForUser(userId);
 
-    // Ruta fija que TODOS tienen
-    const basePath = ["CINTAX", "2025"];
+    // 1) Tomar el año desde la ruta (ej: /api/drive/cintax/2025)
+    let yearString = req.params.year as string | undefined;
+
+    // 2) Si no viene, usar el año actual
+    if (!yearString) {
+      yearString = new Date().getFullYear().toString();
+    }
+
+    // 3) Validar que sea AAAA
+    if (!/^\d{4}$/.test(yearString)) {
+      return res.status(400).json({ error: "Año inválido" });
+    }
+
+    // 4) Ahora sí armamos la ruta CINTAX / {year}
+    const basePath = ["CINTAX", yearString];
 
     const yearFolderId = await resolveFolderPath(drive, basePath);
 
-    // Listar subcarpetas (ADMINISTRACION, CONTA, RRHH, etc.)
     const foldersRes = await drive.files.list({
       q: [
         `'${yearFolderId}' in parents`,
@@ -487,19 +499,16 @@ export const listCintax2025Folders = async (req: Request, res: Response) => {
     });
 
     return res.json({
-      baseFolderId: yearFolderId,  // por si después quieres navegar dentro
+      year: yearString,
+      baseFolderId: yearFolderId,
       folders: foldersRes.data.files ?? [],
     });
   } catch (err) {
     console.error("listCintax2025Folders error:", err);
-    return res.status(500).json({ error: "Error listando carpetas CINTAX/2025" });
+    return res.status(500).json({ error: "Error listando carpetas CINTAX/año" });
   }
 };
 
-/**
- * GET /api/drive/folder/:id/files
- * Lista archivos dentro de la carpeta dada (ADMINISTRACION, RRHH, etc.)
- */
 export const listFilesInFolder = async (req: Request, res: Response) => {
   try {
     const userId = req.user?.id;
