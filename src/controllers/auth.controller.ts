@@ -7,6 +7,8 @@ import crypto from "crypto";
 import "dotenv/config";
 import { OAuth2Client } from "google-auth-library";
 import { syncTicketsFromFreshdesk } from "../services/freshdeskService";
+import { generateDriveAuthUrl, getDriveClientForUser, oauth2Client } from "../services/googleDrive";
+import { resolveFolderPath } from "../services/googleDrivePath";
 
 const prisma = new PrismaClient();
 
@@ -421,5 +423,100 @@ export const syncTickets = async (req: Request, res: Response) => {
   } catch (err) {
     console.error("Error syncTickets:", err);
     res.status(500).json({ error: "Error sincronizando con Freshdesk" });
+  }
+};
+
+//GOOGLE DRIVE
+
+export const connectDrive = (req: Request, res: Response) => {
+  if (!req.user) return res.status(401).json({ error: "No autenticado" });
+
+  const url = generateDriveAuthUrl();
+  // Puedes redirigir directamente o devolver la URL
+  return res.json({ url });
+};
+
+export const driveCallback = async (req: Request, res: Response) => {
+  try {
+    const { code } = req.query;
+    if (!code) return res.status(400).send("Falta code");
+
+    const { tokens } = await oauth2Client.getToken(String(code));
+
+    if (!tokens.refresh_token) {
+      return res.status(400).send("No se recibió refresh_token");
+    }
+
+    const userId = req.user?.id; // lo que pones en tu JWT
+    if (!userId) return res.status(401).send("No autenticado");
+
+    await prisma.trabajador.update({
+      where: { id_trabajador: userId },
+      data: { googleRefreshToken: tokens.refresh_token },
+    });
+
+    // Redirige al front (por ejemplo a /drive)
+    return res.redirect("https://intranet-cintax.netlify.app/drive?connected=1");
+  } catch (err) {
+    console.error("driveCallback error", err);
+    return res.status(500).send("Error conectando Google Drive");
+  }
+};
+
+export const listCintax2025Folders = async (req: Request, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: "No autenticado" });
+
+    const drive = await getDriveClientForUser(userId);
+
+    // Ruta fija que TODOS tienen
+    const basePath = ["CINTAX", "2025"];
+
+    const yearFolderId = await resolveFolderPath(drive, basePath);
+
+    // Listar subcarpetas (ADMINISTRACION, CONTA, RRHH, etc.)
+    const foldersRes = await drive.files.list({
+      q: [
+        `'${yearFolderId}' in parents`,
+        "mimeType = 'application/vnd.google-apps.folder'",
+        "trashed = false",
+      ].join(" and "),
+      fields: "files(id, name, mimeType, modifiedTime)",
+      orderBy: "name",
+    });
+
+    return res.json({
+      baseFolderId: yearFolderId,  // por si después quieres navegar dentro
+      folders: foldersRes.data.files ?? [],
+    });
+  } catch (err) {
+    console.error("listCintax2025Folders error:", err);
+    return res.status(500).json({ error: "Error listando carpetas CINTAX/2025" });
+  }
+};
+
+/**
+ * GET /api/drive/folder/:id/files
+ * Lista archivos dentro de la carpeta dada (ADMINISTRACION, RRHH, etc.)
+ */
+export const listFilesInFolder = async (req: Request, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: "No autenticado" });
+
+    const drive = await getDriveClientForUser(userId);
+    const folderId = req.params.id;
+
+    const resp = await drive.files.list({
+      q: `'${folderId}' in parents and trashed = false`,
+      fields: "files(id, name, mimeType, modifiedTime, size, webViewLink, iconLink)",
+      orderBy: "name",
+    });
+
+    return res.json({ files: resp.data.files ?? [] });
+  } catch (err) {
+    console.error("listFilesInFolder error:", err);
+    return res.status(500).json({ error: "Error listando archivos" });
   }
 };

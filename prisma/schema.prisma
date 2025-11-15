@@ -22,6 +22,7 @@ model Trabajador {
   googleId      String?        @unique
   status        Boolean        @default(true)
   createdAt     DateTime       @default(now())
+  googleRefreshToken String?
   
   refreshTokens RefreshToken[]
   tickets       Ticket[] 
