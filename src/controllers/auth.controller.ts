@@ -356,7 +356,10 @@ export const listTickets = async (req: Request, res: Response) => {
 
     const tickets = await prisma.ticket.findMany({
       where,
-      orderBy: { createdAt: "desc" },
+      orderBy: [
+        { freshdeskId: "desc" },
+        { createdAt: "desc" },
+      ],
       include: {
         trabajador: {
           select: { id_trabajador: true, nombre: true, email: true },
