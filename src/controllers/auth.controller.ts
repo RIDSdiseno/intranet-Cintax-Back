@@ -484,22 +484,16 @@ export const listCintax2025Folders = async (req: Request, res: Response) => {
 
     const drive = await getDriveClientForUser(userId);
 
-    // 1) Tomar el año desde la ruta (ej: /api/drive/cintax/2025)
     let yearString = req.params.year as string | undefined;
-
-    // 2) Si no viene, usar el año actual
     if (!yearString) {
       yearString = new Date().getFullYear().toString();
     }
 
-    // 3) Validar que sea AAAA
     if (!/^\d{4}$/.test(yearString)) {
       return res.status(400).json({ error: "Año inválido" });
     }
 
-    // 4) Ahora sí armamos la ruta CINTAX / {year}
     const basePath = ["CINTAX", yearString];
-
     const yearFolderId = await resolveFolderPath(drive, basePath);
 
     const foldersRes = await drive.files.list({
@@ -517,11 +511,27 @@ export const listCintax2025Folders = async (req: Request, res: Response) => {
       baseFolderId: yearFolderId,
       folders: foldersRes.data.files ?? [],
     });
-  } catch (err) {
+  } catch (err: any) {
     console.error("listCintax2025Folders error:", err);
+
+    // 👉 si el error es que no existe la carpeta, devolvemos 200 sin carpetas
+    if (
+      err instanceof Error &&
+      err.message?.startsWith('No se encontró la carpeta')
+    ) {
+      const yearString = req.params.year ?? new Date().getFullYear().toString();
+      return res.json({
+        year: yearString,
+        baseFolderId: null,
+        folders: [],
+      });
+    }
+
+    // 👉 solo para errores reales dejamos el 500
     return res.status(500).json({ error: "Error listando carpetas CINTAX/año" });
   }
 };
+
 
 export const listFilesInFolder = async (req: Request, res: Response) => {
   try {

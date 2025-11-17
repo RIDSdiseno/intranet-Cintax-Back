@@ -4,7 +4,7 @@ import { PrismaClient } from "@prisma/client";
 const prisma = new PrismaClient();
 
 const DRIVE_SCOPES = [
-  "https://www.googleapis.com/auth/drive.file", 
+  "https://www.googleapis.com/auth/drive", 
   // si quieres acceso TOTAL al drive del usuario:
   // "https://www.googleapis.com/auth/drive"
 ];
