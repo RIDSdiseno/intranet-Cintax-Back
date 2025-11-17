@@ -466,8 +466,11 @@ export const driveCallback = async (req: Request, res: Response) => {
       data: { googleRefreshToken: tokens.refresh_token },
     });
 
+    const FRONTEND_URL =
+  process.env.FRONTEND_URL || "http://localhost:5173";
+
     // Redirige al front (por ejemplo a /drive)
-    return res.redirect("https://intranet-cintax.netlify.app/drive?connected=1");
+    return res.redirect(`${FRONTEND_URL}/drive?connected=1`);
   } catch (err) {
     console.error("driveCallback error", err);
     return res.status(500).send("Error conectando Google Drive");
