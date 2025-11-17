@@ -438,24 +438,28 @@ export const syncTickets = async (req: Request, res: Response) => {
 export const connectDrive = (req: Request, res: Response) => {
   if (!req.user) return res.status(401).json({ error: "No autenticado" });
 
-  const url = generateDriveAuthUrl();
-  // Puedes redirigir directamente o devolver la URL
+  // 👇 ahora pasamos el id del trabajador
+  const url = generateDriveAuthUrl(req.user.id);
   return res.json({ url });
 };
 
 export const driveCallback = async (req: Request, res: Response) => {
   try {
-    const { code } = req.query;
+    const { code, state } = req.query;
+
     if (!code) return res.status(400).send("Falta code");
+    if (!state) return res.status(400).send("Falta state");
+
+    const userId = Number(state);
+    if (!userId) return res.status(400).send("state inválido");
 
     const { tokens } = await oauth2Client.getToken(String(code));
 
     if (!tokens.refresh_token) {
+      // Asegúrate de que en generateDriveAuthUrl tengas
+      // access_type: "offline" y prompt: "consent"
       return res.status(400).send("No se recibió refresh_token");
     }
-
-    const userId = req.user?.id; // lo que pones en tu JWT
-    if (!userId) return res.status(401).send("No autenticado");
 
     await prisma.trabajador.update({
       where: { id_trabajador: userId },

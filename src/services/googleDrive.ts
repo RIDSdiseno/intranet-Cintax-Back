@@ -15,13 +15,15 @@ export const oauth2Client = new google.auth.OAuth2(
   process.env.GOOGLE_DRIVE_REDIRECT_URI
 );
 
-export function generateDriveAuthUrl() {
+export function generateDriveAuthUrl(userId: number) {
   return oauth2Client.generateAuthUrl({
     access_type: "offline",
     prompt: "consent",
     scope: DRIVE_SCOPES,
+    state: String(userId),   // 👈 aquí mandamos el id del trabajador
   });
 }
+
 
 // Devuelve un cliente de Drive para el trabajador logueado
 export async function getDriveClientForUser(trabajadorId: number) {
