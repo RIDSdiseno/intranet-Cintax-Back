@@ -5,7 +5,7 @@ import { connectDrive, driveCallback, listCintax2025Folders, listFilesInFolder }
 const r = Router();
 
 r.get("/connect",authGuard,connectDrive)
-r.get("/callback",authGuard,driveCallback)
+r.get("/callback",driveCallback)
 
 r.get("/cintax/2025",authGuard,listCintax2025Folders)
 r.get("/folder/:id/files",authGuard,listFilesInFolder)
