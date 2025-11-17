@@ -9,7 +9,10 @@ export const app = express();
 import "dotenv/config";
 
 app.use(cors({
-    origin:   'https://intranet-cintax.netlify.app',
+    origin: [
+    'https://intranet-cintax.netlify.app',
+    'http://localhost:5173'
+  ],
     methods: ['GET','POST','PUT','DELETE'],
     credentials: true,
     allowedHeaders: ['Content-Type','Authorization']
