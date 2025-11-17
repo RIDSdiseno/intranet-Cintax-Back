@@ -4,8 +4,6 @@ import { connectDrive, createTicket, googleLoginTrabajador, listTickets, loginTr
 
 const r = Router();
 
-r.get("/health", (_req, res) => res.json({ ok: true, service: "API Movil", ts: Date.now() }));
-
 r.post("/register", registerTrabajador);      // si quieres registro manual
 r.post("/google", googleLoginTrabajador);     // login con Google
 r.post("/login", loginTrabajador)
