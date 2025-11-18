@@ -4,6 +4,7 @@ import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import type { Secret } from "jsonwebtoken";
 import crypto from "crypto";
+import { Readable } from "stream";
 import "dotenv/config";
 import { OAuth2Client } from "google-auth-library";
 import { syncTicketsFromFreshdesk } from "../services/freshdeskService";
@@ -551,5 +552,44 @@ export const listFilesInFolder = async (req: Request, res: Response) => {
   } catch (err) {
     console.error("listFilesInFolder error:", err);
     return res.status(500).json({ error: "Error listando archivos" });
+  }
+};
+
+export const uploadToFolder = async (req: Request, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: "No autenticado" });
+
+    const folderId = req.params.id;
+    if (!folderId) {
+      return res.status(400).json({ error: "Falta folderId" });
+    }
+
+    const file = (req as any).file as Express.Multer.File | undefined;
+    if (!file) {
+      return res.status(400).json({ error: "No se recibió archivo" });
+    }
+
+    const drive = await getDriveClientForUser(userId);
+
+    // Convertimos el buffer en stream
+    const stream = Readable.from(file.buffer);
+
+    const resp = await drive.files.create({
+      requestBody: {
+        name: file.originalname,
+        parents: [folderId],
+      },
+      media: {
+        mimeType: file.mimetype,
+        body: stream,
+      },
+      fields: "id, name, mimeType, webViewLink, iconLink, modifiedTime, size",
+    });
+
+    return res.status(201).json({ file: resp.data });
+  } catch (err) {
+    console.error("uploadToFolder error:", err);
+    return res.status(500).json({ error: "Error subiendo archivo a Drive" });
   }
 };
