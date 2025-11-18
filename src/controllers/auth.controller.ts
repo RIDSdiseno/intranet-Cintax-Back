@@ -446,37 +446,68 @@ export const connectDrive = (req: Request, res: Response) => {
 
 export const driveCallback = async (req: Request, res: Response) => {
   try {
-    const { code, state } = req.query;
+    // ===== DEBUG: logueamos qué está llegando realmente =====
+    console.log("driveCallback query:", req.query);
+
+    const rawCode = req.query.code;
+    const rawState = req.query.state;
+
+    const code = Array.isArray(rawCode) ? rawCode[0] : rawCode;
+    let stateStr = Array.isArray(rawState) ? rawState[0] : rawState;
 
     if (!code) return res.status(400).send("Falta code");
-    if (!state) return res.status(400).send("Falta state");
+    if (!stateStr) return res.status(400).send("Falta state");
 
-    const userId = Number(state);
-    if (!userId) return res.status(400).send("state inválido");
+    stateStr = String(stateStr).trim();
+    console.log("driveCallback parsed stateStr:", stateStr);
+
+    const isAdmin = stateStr === "admin";
+    const userId = !isAdmin && /^\d+$/.test(stateStr) ? Number(stateStr) : null;
+
+    // Si no es admin y tampoco es un número válido => error
+    if (!isAdmin && !userId) {
+      return res.status(400).send("state inválido");
+    }
 
     const { tokens } = await oauth2Client.getToken(String(code));
+    console.log("driveCallback tokens:", tokens);
 
-    if (!tokens.refresh_token) {
-      // Asegúrate de que en generateDriveAuthUrl tengas
-      // access_type: "offline" y prompt: "consent"
+    // Puede venir como tokens.refresh_token o dentro de credentials
+    const refreshToken =
+      tokens.refresh_token || (oauth2Client.credentials as any).refresh_token;
+
+    if (!refreshToken) {
+      console.warn("No se recibió refresh_token en callback Drive (state=", stateStr, ")");
       return res.status(400).send("No se recibió refresh_token");
     }
 
+    if (isAdmin) {
+      // Aquí deberías guardarlo en alguna tabla Config / Settings
+      console.log("REFRESH TOKEN ADMIN:", refreshToken);
+
+      // TODO: guarda refreshToken en BD en vez de solo log
+      return res.send(
+        "Google Drive ADMIN conectado correctamente. Ya puedes cerrar esta pestaña y volver a la intranet."
+      );
+    }
+
+    // ---- MODO USUARIO (lo que ya tenías) ----
     await prisma.trabajador.update({
-      where: { id_trabajador: userId },
-      data: { googleRefreshToken: tokens.refresh_token },
+      where: { id_trabajador: userId! },
+      data: { googleRefreshToken: refreshToken },
     });
 
-    const FRONTEND_URL =
-  process.env.FRONTEND_URL || "http://localhost:5173";
-
-    // Redirige al front (por ejemplo a /drive)
-    return res.redirect(`${FRONTEND_URL}/drive?connected=1`);
+    // Redirige al front
+    return res.redirect("https://intranet-cintax.netlify.app/drive?connected=1");
   } catch (err) {
     console.error("driveCallback error", err);
     return res.status(500).send("Error conectando Google Drive");
   }
 };
+
+
+
+// src/controllers/auth.controller.ts
 
 export const listCintax2025Folders = async (req: Request, res: Response) => {
   try {
@@ -490,49 +521,54 @@ export const listCintax2025Folders = async (req: Request, res: Response) => {
       yearString = new Date().getFullYear().toString();
     }
 
-    if (!/^\d{4}$/.test(yearString)) {
-      return res.status(400).json({ error: "Año inválido" });
+    let folders = [];
+    let baseFolderId = null;
+
+    try {
+      // 1. Intentamos la ruta estricta: CINTAX / AÑO
+      const basePath = ["CINTAX", yearString];
+      const yearFolderId = await resolveFolderPath(drive, basePath);
+      baseFolderId = yearFolderId;
+
+      const foldersRes = await drive.files.list({
+        q: `'${yearFolderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+        fields: "files(id, name, mimeType, modifiedTime)",
+        orderBy: "name",
+      });
+      
+      folders = foldersRes.data.files ?? [];
+
+    } catch (pathError) {
+      // 2. FALLBACK: Si no existe la ruta CINTAX/2025 en "Mi Unidad",
+      // buscamos carpetas compartidas directamente que parezcan del año o estructura.
+      
+      // NOTA: Aquí buscamos cualquier carpeta que esté "Compartida conmigo"
+      // Puedes agregar filtros por nombre si quieres ser más estricto, 
+      // ej: "name contains 'A0' and ..."
+      console.log("Ruta no encontrada, buscando en compartidos...");
+
+      const sharedRes = await drive.files.list({
+        q: `sharedWithMe = true and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+        fields: "files(id, name, mimeType, modifiedTime)",
+        orderBy: "name",
+      });
+
+      // Opcional: Aquí podrías filtrar los resultados por nombre si tienes una convención
+      // Por ejemplo, si solo quieres mostrar carpetas que empiecen con "A" o "B"
+      folders = sharedRes.data.files ?? [];
     }
-
-    const basePath = ["CINTAX", yearString];
-    const yearFolderId = await resolveFolderPath(drive, basePath);
-
-    const foldersRes = await drive.files.list({
-      q: [
-        `'${yearFolderId}' in parents`,
-        "mimeType = 'application/vnd.google-apps.folder'",
-        "trashed = false",
-      ].join(" and "),
-      fields: "files(id, name, mimeType, modifiedTime)",
-      orderBy: "name",
-    });
 
     return res.json({
       year: yearString,
-      baseFolderId: yearFolderId,
-      folders: foldersRes.data.files ?? [],
+      baseFolderId: baseFolderId, // Puede ser null si es compartido
+      folders: folders,
     });
+
   } catch (err: any) {
     console.error("listCintax2025Folders error:", err);
-
-    // 👉 si el error es que no existe la carpeta, devolvemos 200 sin carpetas
-    if (
-      err instanceof Error &&
-      err.message?.startsWith('No se encontró la carpeta')
-    ) {
-      const yearString = req.params.year ?? new Date().getFullYear().toString();
-      return res.json({
-        year: yearString,
-        baseFolderId: null,
-        folders: [],
-      });
-    }
-
-    // 👉 solo para errores reales dejamos el 500
-    return res.status(500).json({ error: "Error listando carpetas CINTAX/año" });
+    return res.status(500).json({ error: "Error listando carpetas" });
   }
 };
-
 
 export const listFilesInFolder = async (req: Request, res: Response) => {
   try {
