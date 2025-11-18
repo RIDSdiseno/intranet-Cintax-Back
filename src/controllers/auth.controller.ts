@@ -8,7 +8,7 @@ import { Readable } from "stream";
 import "dotenv/config";
 import { OAuth2Client } from "google-auth-library";
 import { syncTicketsFromFreshdesk } from "../services/freshdeskService";
-import { generateDriveAuthUrl, getDriveClientForUser, oauth2Client } from "../services/googleDrive";
+import { generateDriveAuthUrl, getAdminDriveClient, getDriveClientForUser, oauth2Client } from "../services/googleDrive";
 import { resolveFolderPath } from "../services/googleDrivePath";
 
 const prisma = new PrismaClient();
@@ -514,7 +514,8 @@ export const listCintax2025Folders = async (req: Request, res: Response) => {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: "No autenticado" });
 
-    const drive = await getDriveClientForUser(userId);
+    // 🔹 Usar SIEMPRE el Drive del admin para navegar CINTAX / año
+    const drive = getAdminDriveClient();
 
     let yearString = req.params.year as string | undefined;
     if (!yearString) {
@@ -522,10 +523,9 @@ export const listCintax2025Folders = async (req: Request, res: Response) => {
     }
 
     let folders = [];
-    let baseFolderId = null;
+    let baseFolderId: string | null = null;
 
     try {
-      // 1. Intentamos la ruta estricta: CINTAX / AÑO
       const basePath = ["CINTAX", yearString];
       const yearFolderId = await resolveFolderPath(drive, basePath);
       baseFolderId = yearFolderId;
@@ -535,17 +535,10 @@ export const listCintax2025Folders = async (req: Request, res: Response) => {
         fields: "files(id, name, mimeType, modifiedTime)",
         orderBy: "name",
       });
-      
-      folders = foldersRes.data.files ?? [];
 
+      folders = foldersRes.data.files ?? [];
     } catch (pathError) {
-      // 2. FALLBACK: Si no existe la ruta CINTAX/2025 en "Mi Unidad",
-      // buscamos carpetas compartidas directamente que parezcan del año o estructura.
-      
-      // NOTA: Aquí buscamos cualquier carpeta que esté "Compartida conmigo"
-      // Puedes agregar filtros por nombre si quieres ser más estricto, 
-      // ej: "name contains 'A0' and ..."
-      console.log("Ruta no encontrada, buscando en compartidos...");
+      console.log("Ruta no encontrada, buscando en compartidos del admin...");
 
       const sharedRes = await drive.files.list({
         q: `sharedWithMe = true and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
@@ -553,22 +546,21 @@ export const listCintax2025Folders = async (req: Request, res: Response) => {
         orderBy: "name",
       });
 
-      // Opcional: Aquí podrías filtrar los resultados por nombre si tienes una convención
-      // Por ejemplo, si solo quieres mostrar carpetas que empiecen con "A" o "B"
       folders = sharedRes.data.files ?? [];
     }
 
     return res.json({
       year: yearString,
-      baseFolderId: baseFolderId, // Puede ser null si es compartido
-      folders: folders,
+      baseFolderId,
+      folders,
     });
-
-  } catch (err: any) {
+  } catch (err) {
     console.error("listCintax2025Folders error:", err);
     return res.status(500).json({ error: "Error listando carpetas" });
   }
 };
+
+
 
 export const listFilesInFolder = async (req: Request, res: Response) => {
   try {

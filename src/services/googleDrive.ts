@@ -45,4 +45,21 @@ export async function getDriveClientForUser(trabajadorId: number) {
   return google.drive({ version: "v3", auth: client });
 }
 
+export function getAdminDriveClient() {
+  const refreshToken = process.env.GOOGLE_DRIVE_ADMIN_REFRESH_TOKEN;
+
+  if (!refreshToken) {
+    throw new Error("Falta GOOGLE_DRIVE_ADMIN_REFRESH_TOKEN");
+  }
+
+  const client = new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET,
+    process.env.GOOGLE_DRIVE_REDIRECT_URI
+  );
+
+  client.setCredentials({ refresh_token: refreshToken });
+
+  return google.drive({ version: "v3", auth: client });
+}
 
