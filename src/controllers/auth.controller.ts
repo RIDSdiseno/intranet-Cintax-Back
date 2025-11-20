@@ -696,7 +696,6 @@ type VisibleFolder = {
 const GOOGLE_DRIVE_ADMIN_EMAIL =
   process.env.GOOGLE_DRIVE_ADMIN_EMAIL?.toLowerCase();
 
-
 export const listMySharedFolders = async (req: Request, res: Response) => {
   try {
     const userEmail = req.user?.email?.toLowerCase();
@@ -704,16 +703,8 @@ export const listMySharedFolders = async (req: Request, res: Response) => {
       return res.status(401).json({ error: "No autenticado" });
     }
 
-    console.log("[Drive] listMySharedFolders userEmail:", userEmail,
-      "ADMIN_ENV:", GOOGLE_DRIVE_ADMIN_EMAIL,
-      "isAdminUser:",
-      GOOGLE_DRIVE_ADMIN_EMAIL !== undefined &&
-      userEmail === GOOGLE_DRIVE_ADMIN_EMAIL);
-
-
     const drive = getAdminDriveClient();
 
-    // ⚡️¿Este usuario es el admin de Drive?
     const isAdminUser =
       GOOGLE_DRIVE_ADMIN_EMAIL !== undefined &&
       userEmail === GOOGLE_DRIVE_ADMIN_EMAIL;
@@ -728,7 +719,7 @@ export const listMySharedFolders = async (req: Request, res: Response) => {
     const basePath = ["CINTAX", yearString];
     const yearFolderId = await resolveFolderPath(drive, basePath);
 
-    // 2) Listar categorías dentro de ese año (CONTA, RRHH, TRIB, etc.)
+    // 2) Listar CATEGORÍAS dentro de ese año (CONTA, RRHH, TRIB, etc.)
     const categoriasRes = await drive.files.list({
       q: `'${yearFolderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
       fields: "files(id, name, mimeType, modifiedTime)",
@@ -740,10 +731,30 @@ export const listMySharedFolders = async (req: Request, res: Response) => {
 
     const visibleFolders: VisibleFolder[] = [];
 
-    // 3) Para cada categoría, listar sus subcarpetas (A01, A02, ...)
+    // 3) Para cada categoría decidimos si el usuario la ve o no
     for (const categoria of categorias) {
       if (!categoria.id) continue;
 
+      const categoriaName = categoria.name ?? "";
+      const catPathNames = ["CINTAX", yearString, categoriaName];
+      const catPathString = catPathNames.join(" / ");
+
+      // ⚡ ADMIN: ve TODAS las categorías sin revisar permisos
+      if (isAdminUser) {
+        visibleFolders.push({
+          id: categoria.id,
+          name: categoriaName,
+          categoria: categoriaName,
+          modifiedTime: categoria.modifiedTime ?? null,
+          pathNames: catPathNames,
+          pathString: catPathString,
+        });
+        continue;
+      }
+
+      // ⚠ USUARIO NORMAL:
+      // Solo mostramos la categoría si tiene al menos UNA subcarpeta
+      // compartida con él (A01, PERFOROCK, etc.)
       const subRes = await drive.files.list({
         q: `'${categoria.id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
         fields: "files(id, name, mimeType, modifiedTime)",
@@ -753,30 +764,11 @@ export const listMySharedFolders = async (req: Request, res: Response) => {
       const subData: DriveFileList = subRes.data;
       const subFolders: DriveFile[] = subData.files ?? [];
 
+      let userHasSomething = false;
+
       for (const folder of subFolders) {
         if (!folder.id) continue;
 
-        const categoriaName = categoria.name ?? "";
-        const folderName = folder.name ?? "";
-
-        // ⚡️ SI ES ADMIN → VE TODO, SIN FILTRO DE PERMISOS
-        if (isAdminUser) {
-          const pathNames = ["CINTAX", yearString, categoriaName, folderName];
-          const pathString = pathNames.join(" / ");
-
-          visibleFolders.push({
-            id: folder.id,
-            name: folderName,
-            categoria: categoriaName,
-            modifiedTime: folder.modifiedTime ?? null,
-            pathNames,
-            pathString,
-          });
-
-          continue; // pasamos al siguiente folder
-        }
-
-        // ⚠️ USUARIO NORMAL → filtramos por permisos de esa subcarpeta
         try {
           const permResp = await drive.permissions.list({
             fileId: folder.id,
@@ -787,38 +779,38 @@ export const listMySharedFolders = async (req: Request, res: Response) => {
           const perms: DrivePermission[] = permData.permissions ?? [];
 
           const hasAccess = perms.some((p) => {
-            if (
+            return (
               (p.type === "user" || p.type === "group") &&
               p.emailAddress?.toLowerCase() === userEmail
-            ) {
-              return true;
-            }
-            return false;
+            );
           });
 
           if (hasAccess) {
-            const pathNames = ["CINTAX", yearString, categoriaName, folderName];
-            const pathString = pathNames.join(" / ");
-
-            visibleFolders.push({
-              id: folder.id,
-              name: folderName,
-              categoria: categoriaName,
-              modifiedTime: folder.modifiedTime ?? null,
-              pathNames,
-              pathString,
-            });
+            userHasSomething = true;
+            break; // ya sabemos que esta categoría le sirve
           }
         } catch (permErr) {
           console.error("Error leyendo permisos de carpeta", folder.id, permErr);
         }
+      }
+
+      // Si el usuario tiene al menos una subcarpeta dentro, mostramos la CATEGORÍA
+      if (userHasSomething) {
+        visibleFolders.push({
+          id: categoria.id,
+          name: categoriaName,
+          categoria: categoriaName,
+          modifiedTime: categoria.modifiedTime ?? null,
+          pathNames: catPathNames,
+          pathString: catPathString,
+        });
       }
     }
 
     return res.json({
       year: yearString,
       basePath,
-      folders: visibleFolders,
+      folders: visibleFolders, // ← ahora son CONTA, RRHH, TRIB, ...
     });
   } catch (err) {
     console.error("listMySharedFolders error:", err);
