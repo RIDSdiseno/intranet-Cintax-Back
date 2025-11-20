@@ -571,6 +571,12 @@ export const listFilesInFolder = async (req: Request, res: Response) => {
       return res.status(401).json({ error: "No autenticado" });
     }
 
+    console.log("[Drive] listFilesInFolder userEmail:", userEmail,
+      "ADMIN_ENV:", GOOGLE_DRIVE_ADMIN_EMAIL,
+      "isAdminUser:",
+      GOOGLE_DRIVE_ADMIN_EMAIL !== undefined &&
+      userEmail === GOOGLE_DRIVE_ADMIN_EMAIL);
+
     const folderId = req.params.id;
     if (!folderId) {
       return res.status(400).json({ error: "Falta folderId" });
@@ -697,6 +703,13 @@ export const listMySharedFolders = async (req: Request, res: Response) => {
     if (!userEmail) {
       return res.status(401).json({ error: "No autenticado" });
     }
+
+    console.log("[Drive] listMySharedFolders userEmail:", userEmail,
+      "ADMIN_ENV:", GOOGLE_DRIVE_ADMIN_EMAIL,
+      "isAdminUser:",
+      GOOGLE_DRIVE_ADMIN_EMAIL !== undefined &&
+      userEmail === GOOGLE_DRIVE_ADMIN_EMAIL);
+
 
     const drive = getAdminDriveClient();
 
