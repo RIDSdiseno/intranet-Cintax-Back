@@ -1,7 +1,7 @@
 import { Router } from "express";
 import multer from "multer";
 import { authGuard } from "../middlewares/auth.middleware";
-import { connectDrive, driveCallback, listCintax2025Folders, listFilesInFolder, uploadToFolder  } from "../controllers/auth.controller";
+import { connectDrive, driveCallback, listCintax2025Folders, listFilesInFolder, listMySharedFolders, uploadToFolder  } from "../controllers/auth.controller";
 
 const r = Router();
 
@@ -13,7 +13,7 @@ const upload = multer({
 r.get("/connect",authGuard,connectDrive)
 r.get("/callback",driveCallback)
 
-r.get("/cintax/:year",authGuard,listCintax2025Folders)
+r.get("/cintax/:year",authGuard,listMySharedFolders)
 r.get("/folder/:id/files",authGuard,listFilesInFolder)
 r.post(
   "/folder/:id/upload",

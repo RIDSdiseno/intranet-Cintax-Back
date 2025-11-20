@@ -10,6 +10,8 @@ import { OAuth2Client } from "google-auth-library";
 import { syncTicketsFromFreshdesk } from "../services/freshdeskService";
 import { generateDriveAuthUrl, getAdminDriveClient, getDriveClientForUser, oauth2Client } from "../services/googleDrive";
 import { resolveFolderPath } from "../services/googleDrivePath";
+import type { drive_v3 } from "googleapis";
+
 
 const prisma = new PrismaClient();
 
@@ -564,30 +566,84 @@ export const listCintax2025Folders = async (req: Request, res: Response) => {
 
 export const listFilesInFolder = async (req: Request, res: Response) => {
   try {
-    const userId = req.user?.id;
-    if (!userId) return res.status(401).json({ error: "No autenticado" });
+    const userEmail = req.user?.email?.toLowerCase();
+    if (!userEmail) {
+      return res.status(401).json({ error: "No autenticado" });
+    }
 
-    const drive = await getDriveClientForUser(userId);
     const folderId = req.params.id;
+    if (!folderId) {
+      return res.status(400).json({ error: "Falta folderId" });
+    }
 
+    const drive = getAdminDriveClient();
+
+    // 1) Listar TODO el contenido de la carpeta como ADMIN
     const resp = await drive.files.list({
       q: `'${folderId}' in parents and trashed = false`,
-      fields: "files(id, name, mimeType, modifiedTime, size, webViewLink, iconLink)",
+      fields:
+        "files(id, name, mimeType, modifiedTime, size, webViewLink, iconLink)",
       orderBy: "name",
     });
 
-    return res.json({ files: resp.data.files ?? [] });
+    const allFiles = resp.data.files ?? [];
+
+    // 2) Filtrar solo los que el usuario puede ver (por permisos del archivo)
+    const visibles: typeof allFiles = [];
+
+    for (const file of allFiles) {
+      if (!file.id) continue;
+
+      try {
+        const permResp = await drive.permissions.list({
+          fileId: file.id,
+          fields: "permissions(emailAddress,type,domain,role)",
+        });
+
+        const perms = permResp.data.permissions ?? [];
+
+        const hasAccess = perms.some((p) => {
+          // permisos directos por correo
+          if (
+            (p.type === "user" || p.type === "group") &&
+            p.emailAddress?.toLowerCase() === userEmail
+          ) {
+            return true;
+          }
+
+          // si quieres aceptar carpetas abiertas al dominio o públicas:
+          // if (p.type === "anyone") return true;
+          // if (p.type === "domain" && p.domain === "tu-dominio.cl") return true;
+
+          return false;
+        });
+
+        if (hasAccess) {
+          visibles.push(file);
+        }
+      } catch (permErr) {
+        console.error("Error leyendo permisos de archivo", file.id, permErr);
+      }
+    }
+
+    // 3) Si NO tiene acceso a ningún archivo dentro ⇒ devolvemos 403
+    if (visibles.length === 0) {
+      return res
+        .status(403)
+        .json({ error: "No tienes permisos para esta carpeta" });
+    }
+
+    // 4) Si tiene al menos uno (por ej. A01), los devolvemos
+    return res.json({ files: visibles });
   } catch (err) {
     console.error("listFilesInFolder error:", err);
     return res.status(500).json({ error: "Error listando archivos" });
   }
 };
 
+
 export const uploadToFolder = async (req: Request, res: Response) => {
   try {
-    const userId = req.user?.id;
-    if (!userId) return res.status(401).json({ error: "No autenticado" });
-
     const folderId = req.params.id;
     if (!folderId) {
       return res.status(400).json({ error: "Falta folderId" });
@@ -598,9 +654,9 @@ export const uploadToFolder = async (req: Request, res: Response) => {
       return res.status(400).json({ error: "No se recibió archivo" });
     }
 
-    const drive = await getDriveClientForUser(userId);
+    // ✅ también usamos la cuenta ADMIN
+    const drive = getAdminDriveClient();
 
-    // Convertimos el buffer en stream
     const stream = Readable.from(file.buffer);
 
     const resp = await drive.files.create({
@@ -619,5 +675,122 @@ export const uploadToFolder = async (req: Request, res: Response) => {
   } catch (err) {
     console.error("uploadToFolder error:", err);
     return res.status(500).json({ error: "Error subiendo archivo a Drive" });
+  }
+};
+
+type DriveFile = drive_v3.Schema$File;
+type DriveFileList = drive_v3.Schema$FileList;
+type DrivePermission = drive_v3.Schema$Permission;
+
+type VisibleFolder = {
+  id: string;
+  name: string;
+  categoria: string;
+  modifiedTime?: string | null;
+  pathNames: string[];
+  pathString: string;
+};
+// src/controllers/auth.controller.ts
+
+export const listMySharedFolders = async (req: Request, res: Response) => {
+  try {
+    const userEmail = req.user?.email?.toLowerCase();
+    if (!userEmail) {
+      return res.status(401).json({ error: "No autenticado" });
+    }
+
+    const drive = getAdminDriveClient();
+
+    // Año por URL o año actual
+    let yearString = req.params.year as string | undefined;
+    if (!yearString) {
+      yearString = new Date().getFullYear().toString();
+    }
+
+    // 1) Resolver ruta base: CINTAX / año
+    const basePath = ["CINTAX", yearString];
+    const yearFolderId = await resolveFolderPath(drive, basePath);
+
+    // 2) Listar categorías dentro de ese año (CONTA, TRIBUTARIO, etc.)
+    const categoriasRes = await drive.files.list({
+      q: `'${yearFolderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+      fields: "files(id, name, mimeType, modifiedTime)",
+      orderBy: "name",
+    });
+
+    const categoriasData: DriveFileList = categoriasRes.data;
+    const categorias: DriveFile[] = categoriasData.files ?? [];
+
+    const visibleFolders: VisibleFolder[] = [];
+
+    // 3) Para cada categoría, listar sus subcarpetas (A01, A02, ...)
+    for (const categoria of categorias) {
+      if (!categoria.id) continue;
+
+      const subRes = await drive.files.list({
+        q: `'${categoria.id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+        fields: "files(id, name, mimeType, modifiedTime)",
+        orderBy: "name",
+      });
+
+      const subData: DriveFileList = subRes.data;
+      const subFolders: DriveFile[] = subData.files ?? [];
+
+      // 4) Revisar permisos de cada subcarpeta
+      for (const folder of subFolders) {
+        if (!folder.id) continue;
+
+        try {
+          const permResp = await drive.permissions.list({
+            fileId: folder.id,
+            fields: "permissions(emailAddress,type,domain,role)",
+          });
+
+          const permData = permResp.data;
+          const perms: DrivePermission[] = permData.permissions ?? [];
+
+          const hasAccess = perms.some((p) => {
+            if (
+              (p.type === "user" || p.type === "group") &&
+              p.emailAddress?.toLowerCase() === userEmail
+            ) {
+              return true;
+            }
+            // Si quisieras aceptar carpetas abiertas al dominio o públicas, podrías sumar:
+            // if (p.type === "anyone") return true;
+            // if (p.type === "domain" && p.domain === "tu-dominio.cl") return true;
+            return false;
+          });
+
+          if (hasAccess) {
+            const categoriaName = categoria.name ?? "";
+            const folderName = folder.name ?? "";
+
+            const pathNames = ["CINTAX", yearString, categoriaName, folderName];
+            const pathString = pathNames.join(" / ");
+
+            visibleFolders.push({
+              id: folder.id,
+              name: folderName,
+              categoria: categoriaName,
+              modifiedTime: folder.modifiedTime ?? null,
+              pathNames,
+              pathString,
+            });
+          }
+        } catch (permErr) {
+          console.error("Error leyendo permisos de carpeta", folder.id, permErr);
+        }
+      }
+    }
+
+    return res.json({
+      year: yearString,
+      basePath: basePath, // ["CINTAX", "2025"]
+      folders: visibleFolders, // A01, B03, etc. solo las que están compartidas con el usuario
+    });
+  } catch (err) {
+    console.error("listMySharedFolders error:", err);
+    return res.status(500).json({ error: "Error listando carpetas compartidas" });
   }
 };

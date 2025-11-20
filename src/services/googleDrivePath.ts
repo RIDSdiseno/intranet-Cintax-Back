@@ -1,5 +1,14 @@
 // src/services/googleDrivePath.ts
-import { drive_v3 } from "googleapis";
+import type { drive_v3 } from "googleapis";
+
+type DrivePath = {
+  ids: string[];
+  names: string[];
+};
+
+// Alias de tipos de la API de Drive
+type DriveFile = drive_v3.Schema$File;
+type DriveFileList = drive_v3.Schema$FileList;
 
 /**
  * Busca una carpeta por nombre dentro de otra carpeta.
@@ -21,7 +30,10 @@ export async function findFolderByName(
     pageSize: 1,
   });
 
-  const folder = res.data.files?.[0];
+  const data: DriveFileList = res.data;
+  const files: DriveFile[] = data.files ?? [];
+  const folder = files[0];
+
   return folder?.id ?? null;
 }
 
@@ -44,4 +56,42 @@ export async function resolveFolderPath(
   }
 
   return currentParent; // ID final (ej: carpeta "2025")
+}
+
+/**
+ * Dado el ID de un archivo/carpeta, reconstruye la ruta completa
+ * subiendo por los padres hasta llegar a root.
+ */
+export async function getFullPathFromId(
+  drive: drive_v3.Drive,
+  fileId: string
+): Promise<DrivePath> {
+  const ids: string[] = [];
+  const names: string[] = [];
+
+  let currentId: string | null | undefined = fileId;
+
+  while (currentId) {
+    const res = await drive.files.get({
+      fileId: currentId,
+      fields: "id, name, parents",
+    });
+
+    const file: DriveFile = res.data;
+    if (!file.id) break;
+
+    ids.unshift(file.id);
+    names.unshift(file.name ?? "");
+
+    const parents: string[] = (file.parents ?? []) as string[];
+
+    // si no tiene padres o llegamos a root, cortamos
+    if (parents.length === 0 || parents[0] === "root") {
+      break;
+    }
+
+    currentId = parents[0];
+  }
+
+  return { ids, names };
 }
