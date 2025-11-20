@@ -578,6 +578,10 @@ export const listFilesInFolder = async (req: Request, res: Response) => {
 
     const drive = getAdminDriveClient();
 
+    const isAdminUser =
+      GOOGLE_DRIVE_ADMIN_EMAIL !== undefined &&
+      userEmail === GOOGLE_DRIVE_ADMIN_EMAIL;
+
     // 1) Listar TODO el contenido de la carpeta como ADMIN
     const resp = await drive.files.list({
       q: `'${folderId}' in parents and trashed = false`,
@@ -588,7 +592,12 @@ export const listFilesInFolder = async (req: Request, res: Response) => {
 
     const allFiles = resp.data.files ?? [];
 
-    // 2) Filtrar solo los que el usuario puede ver (por permisos del archivo)
+    // ⚡️ Admin ve todo directamente
+    if (isAdminUser) {
+      return res.json({ files: allFiles });
+    }
+
+    // 2) Usuario normal: filtrar solo los que el usuario puede ver
     const visibles: typeof allFiles = [];
 
     for (const file of allFiles) {
@@ -603,18 +612,12 @@ export const listFilesInFolder = async (req: Request, res: Response) => {
         const perms = permResp.data.permissions ?? [];
 
         const hasAccess = perms.some((p) => {
-          // permisos directos por correo
           if (
             (p.type === "user" || p.type === "group") &&
             p.emailAddress?.toLowerCase() === userEmail
           ) {
             return true;
           }
-
-          // si quieres aceptar carpetas abiertas al dominio o públicas:
-          // if (p.type === "anyone") return true;
-          // if (p.type === "domain" && p.domain === "tu-dominio.cl") return true;
-
           return false;
         });
 
@@ -626,14 +629,7 @@ export const listFilesInFolder = async (req: Request, res: Response) => {
       }
     }
 
-    // 3) Si NO tiene acceso a ningún archivo dentro ⇒ devolvemos 403
-    if (visibles.length === 0) {
-      return res
-        .status(403)
-        .json({ error: "No tienes permisos para esta carpeta" });
-    }
-
-    // 4) Si tiene al menos uno (por ej. A01), los devolvemos
+    // 3) Si no hay archivos visibles, devolvemos lista vacía (no 403)
     return res.json({ files: visibles });
   } catch (err) {
     console.error("listFilesInFolder error:", err);
@@ -690,7 +686,10 @@ type VisibleFolder = {
   pathNames: string[];
   pathString: string;
 };
-// src/controllers/auth.controller.ts
+
+const GOOGLE_DRIVE_ADMIN_EMAIL =
+  process.env.GOOGLE_DRIVE_ADMIN_EMAIL?.toLowerCase();
+
 
 export const listMySharedFolders = async (req: Request, res: Response) => {
   try {
@@ -700,6 +699,11 @@ export const listMySharedFolders = async (req: Request, res: Response) => {
     }
 
     const drive = getAdminDriveClient();
+
+    // ⚡️¿Este usuario es el admin de Drive?
+    const isAdminUser =
+      GOOGLE_DRIVE_ADMIN_EMAIL !== undefined &&
+      userEmail === GOOGLE_DRIVE_ADMIN_EMAIL;
 
     // Año por URL o año actual
     let yearString = req.params.year as string | undefined;
@@ -711,7 +715,7 @@ export const listMySharedFolders = async (req: Request, res: Response) => {
     const basePath = ["CINTAX", yearString];
     const yearFolderId = await resolveFolderPath(drive, basePath);
 
-    // 2) Listar categorías dentro de ese año (CONTA, TRIBUTARIO, etc.)
+    // 2) Listar categorías dentro de ese año (CONTA, RRHH, TRIB, etc.)
     const categoriasRes = await drive.files.list({
       q: `'${yearFolderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
       fields: "files(id, name, mimeType, modifiedTime)",
@@ -736,10 +740,30 @@ export const listMySharedFolders = async (req: Request, res: Response) => {
       const subData: DriveFileList = subRes.data;
       const subFolders: DriveFile[] = subData.files ?? [];
 
-      // 4) Revisar permisos de cada subcarpeta
       for (const folder of subFolders) {
         if (!folder.id) continue;
 
+        const categoriaName = categoria.name ?? "";
+        const folderName = folder.name ?? "";
+
+        // ⚡️ SI ES ADMIN → VE TODO, SIN FILTRO DE PERMISOS
+        if (isAdminUser) {
+          const pathNames = ["CINTAX", yearString, categoriaName, folderName];
+          const pathString = pathNames.join(" / ");
+
+          visibleFolders.push({
+            id: folder.id,
+            name: folderName,
+            categoria: categoriaName,
+            modifiedTime: folder.modifiedTime ?? null,
+            pathNames,
+            pathString,
+          });
+
+          continue; // pasamos al siguiente folder
+        }
+
+        // ⚠️ USUARIO NORMAL → filtramos por permisos de esa subcarpeta
         try {
           const permResp = await drive.permissions.list({
             fileId: folder.id,
@@ -756,16 +780,10 @@ export const listMySharedFolders = async (req: Request, res: Response) => {
             ) {
               return true;
             }
-            // Si quisieras aceptar carpetas abiertas al dominio o públicas, podrías sumar:
-            // if (p.type === "anyone") return true;
-            // if (p.type === "domain" && p.domain === "tu-dominio.cl") return true;
             return false;
           });
 
           if (hasAccess) {
-            const categoriaName = categoria.name ?? "";
-            const folderName = folder.name ?? "";
-
             const pathNames = ["CINTAX", yearString, categoriaName, folderName];
             const pathString = pathNames.join(" / ");
 
@@ -786,11 +804,13 @@ export const listMySharedFolders = async (req: Request, res: Response) => {
 
     return res.json({
       year: yearString,
-      basePath: basePath, // ["CINTAX", "2025"]
-      folders: visibleFolders, // A01, B03, etc. solo las que están compartidas con el usuario
+      basePath,
+      folders: visibleFolders,
     });
   } catch (err) {
     console.error("listMySharedFolders error:", err);
-    return res.status(500).json({ error: "Error listando carpetas compartidas" });
+    return res
+      .status(500)
+      .json({ error: "Error listando carpetas compartidas" });
   }
 };
