@@ -16,6 +16,38 @@ import { listGroupMembersEmails } from "../services/googleDirectoryGroups";
 
 const prisma = new PrismaClient();
 
+// 🔹 Dado un email, mira en qué grupo(s) está y devuelve el Area correspondiente
+async function resolveAreaFromGroupsByEmail(email: string): Promise<Area | null> {
+  const emailLower = email.toLowerCase();
+
+  const groupMap: Array<{ area: Area; envVar: string }> = [
+    { area: Area.ADMIN,      envVar: "GROUP_ADMIN_EMAIL" },
+    { area: Area.CONTA,      envVar: "GROUP_CONTA_EMAIL" },
+    { area: Area.RRHH,       envVar: "GROUP_RRHH_EMAIL" },
+    { area: Area.TRIBUTARIO, envVar: "GROUP_TRIBUTARIO_EMAIL" },
+  ];
+
+  for (const { area, envVar } of groupMap) {
+    const groupEmail = process.env[envVar];
+    if (!groupEmail) continue; // si el grupo no está configurado, lo saltamos
+
+    try {
+      const members = await listGroupMembersEmails(groupEmail);
+      const membersLower = members.map(m => m.toLowerCase());
+
+      if (membersLower.includes(emailLower)) {
+        // 👈 primera coincidencia gana (prioridad: ADMIN > CONTA > RRHH > TRIBUTARIO)
+        return area;
+      }
+    } catch (e) {
+      console.error(`Error leyendo miembros del grupo ${groupEmail}`, e);
+    }
+  }
+
+  return null;
+}
+
+
 async function syncAreasFromGroupsCore(clearOthers: boolean = false) {
   const groupMap: Array<{ area: Area; envVar: string }> = [
     { area: Area.ADMIN,       envVar: "GROUP_ADMIN_EMAIL" },
@@ -286,6 +318,21 @@ export const googleLoginTrabajador = async (req: Request, res: Response) => {
 
     if (!trabajador.status) {
       return res.status(403).json({ error: "Trabajador inactivo" });
+    }
+
+    try {
+      const nuevaArea = await resolveAreaFromGroupsByEmail(email);
+      if (nuevaArea && trabajador.areaInterna !== nuevaArea) {
+        trabajador = await prisma.trabajador.update({
+          where: { id_trabajador: trabajador.id_trabajador },
+          data: { areaInterna: nuevaArea },
+        });
+        console.log(
+          `Área actualizada para ${email}: ${trabajador.areaInterna} -> ${nuevaArea}`
+        );
+      }
+    } catch (e) {
+      console.error("Error actualizando areaInterna por grupos en login Google:", e);
     }
 
     const jwtPayload: JwtPayload = {
