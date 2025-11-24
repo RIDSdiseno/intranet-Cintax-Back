@@ -1,5 +1,5 @@
 // src/jobs/generarTareas.ts
-import { PrismaClient, Area, EstadoTarea } from "@prisma/client";
+import { PrismaClient, Area, EstadoTarea, FrecuenciaTarea } from "@prisma/client";
 
 const prisma = new PrismaClient();
 
@@ -91,101 +91,111 @@ function getNextDueDate(tpl: any, today: Date): Date | null {
 export async function generarTareasAutomaticas(
   fechaReferencia: Date = new Date()
 ) {
-  // 1) traer todas las plantillas activas
+  // 1) Plantillas activas
   const plantillas = await prisma.tareaPlantilla.findMany({
     where: { activo: true },
+    select: {
+      id_tarea_plantilla: true,
+      area: true,
+      frecuencia: true,
+      diaMesVencimiento: true,
+      diaSemanaVencimiento: true,
+      responsableDefaultId: true,
+      nombre: true,
+    },
   });
 
-  // 2) Agrupar trabajadores activos por áreaInterna (ADMIN, CONTA, RRHH, TRIBUTARIO)
-  const workersByArea: Record<Area, { id_trabajador: number }[]> = {
-    [Area.ADMIN]: [],
-    [Area.CONTA]: [],
-    [Area.RRHH]: [],
-    [Area.TRIBUTARIO]: [],
-  };
-
+  // 2) Trabajadores activos agrupados por áreaInterna
   const allWorkers = await prisma.trabajador.findMany({
     where: { status: true, areaInterna: { not: null } },
     select: { id_trabajador: true, areaInterna: true },
   });
 
+  const workersByArea: Partial<Record<Area, number[]>> = {};
   for (const w of allWorkers) {
     if (!w.areaInterna) continue;
-    workersByArea[w.areaInterna].push({ id_trabajador: w.id_trabajador });
+    if (!workersByArea[w.areaInterna]) {
+      workersByArea[w.areaInterna] = [];
+    }
+    workersByArea[w.areaInterna]!.push(w.id_trabajador);
   }
 
-  // 3) índices para round-robin por área
-  const areaIndex: Partial<Record<Area, number>> = {
-    [Area.ADMIN]: 0,
-    [Area.CONTA]: 0,
-    [Area.RRHH]: 0,
-    [Area.TRIBUTARIO]: 0,
-  };
-
-  // 4) Recorrer plantillas y generar tareas
+  // 3) Por cada plantilla...
   for (const tpl of plantillas) {
-    const dueDate = getNextDueDate(tpl, fechaReferencia);
+    const dueDate = getNextDueDate(
+      {
+        frecuencia: tpl.frecuencia,
+        diaMesVencimiento: tpl.diaMesVencimiento,
+        diaSemanaVencimiento: tpl.diaSemanaVencimiento,
+      },
+      fechaReferencia
+    );
     if (!dueDate) continue;
 
-    // 5) Evitar duplicar: ver si ya existe una tarea para esta plantilla
-    //    en el mismo "periodo" (mes o semana, según frecuencia)
+    // Rango del período (para no duplicar dentro del mismo mes/semana)
     let startPeriod: Date;
     let endPeriod: Date;
 
-    if (tpl.frecuencia === "MENSUAL") {
+    if (tpl.frecuencia === FrecuenciaTarea.MENSUAL) {
       startPeriod = startOfMonth(dueDate);
       endPeriod = startOfNextMonth(dueDate);
-    } else if (tpl.frecuencia === "SEMANAL") {
+    } else if (tpl.frecuencia === FrecuenciaTarea.SEMANAL) {
       startPeriod = startOfWeek(dueDate);
       endPeriod = startOfNextWeek(dueDate);
     } else {
-      // UNICA u otra → si ya existe cualquiera en un rango gigante, no crear otra
+      // UNICA u otra → usamos rango muy amplio
       startPeriod = new Date(2000, 0, 1);
       endPeriod = new Date(2100, 0, 1);
     }
 
-    const yaExiste = await prisma.tareaAsignada.findFirst({
-      where: {
-        tareaPlantillaId: tpl.id_tarea_plantilla,
-        fechaProgramada: {
-          gte: startPeriod,
-          lt: endPeriod,
-        },
-      },
-    });
+    // 4) Determinar para QUÉ trabajadores crear tareas
 
-    if (yaExiste) continue;
-
-    // 6) Decidir a quién se asigna
-    let trabajadorId: number | null = null;
+    let workerIds: number[] = [];
 
     if (tpl.responsableDefaultId) {
-      // Si la plantilla tiene responsable fijo, usamos ese
-      trabajadorId = tpl.responsableDefaultId;
+      // Tarea que pertenece a un responsable específico
+      workerIds = [tpl.responsableDefaultId];
     } else if (tpl.area && workersByArea[tpl.area]?.length) {
-      // Si no hay responsable fijo, usamos el área de la plantilla
-      const arr = workersByArea[tpl.area];
-      const idx = areaIndex[tpl.area] ?? 0;
-      trabajadorId = arr[idx % arr.length].id_trabajador;
-      areaIndex[tpl.area] = idx + 1;
+      // Tarea "del área": se crea una por cada trabajador del área
+      workerIds = workersByArea[tpl.area]!;
+    } else {
+      // Sin área ni responsable: opcionalmente podrías crear una sin asignar
+      workerIds = [];
     }
 
-    // 7) Crear la tarea asignada
-    await prisma.tareaAsignada.create({
-      data: {
-        tareaPlantillaId: tpl.id_tarea_plantilla,
-        fechaProgramada: dueDate,
-        trabajadorId,
-        estado: EstadoTarea.PENDIENTE, // enum
-      },
-    });
+    // 5) Para cada trabajador, crear SOLO si no tiene aún esa tarea en el período
+    for (const workerId of workerIds) {
+      const yaExiste = await prisma.tareaAsignada.findFirst({
+        where: {
+          tareaPlantillaId: tpl.id_tarea_plantilla,
+          trabajadorId: workerId,
+          fechaProgramada: {
+            gte: startPeriod,
+            lt: endPeriod,
+          },
+        },
+      });
 
-    console.log(
-      `Creada tarea para plantilla ${tpl.nombre} con fecha ${dueDate
-        .toISOString()
-        .slice(0, 10)} asignada a ${
-        trabajadorId ? `trabajador ${trabajadorId}` : "SIN asignar"
-      }`
-    );
+      if (yaExiste) continue;
+
+      await prisma.tareaAsignada.create({
+        data: {
+          tareaPlantillaId: tpl.id_tarea_plantilla,
+          fechaProgramada: dueDate,
+          trabajadorId: workerId,
+          estado: EstadoTarea.PENDIENTE,
+        },
+      });
+
+      console.log(
+        `Creada tarea "${tpl.nombre}" para plantilla ${tpl.id_tarea_plantilla} ` +
+          `para trabajador ${workerId} con fecha ${dueDate
+            .toISOString()
+            .slice(0, 10)}`
+      );
+    }
+
+    // Si quisieras además crear UNA tarea sin asignar cuando no hay área ni responsable,
+    // aquí podrías hacerlo comprobando trabajadorId = null de forma similar.
   }
 }
