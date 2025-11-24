@@ -16,6 +16,29 @@ import { listGroupMembersEmails } from "../services/googleDirectoryGroups";
 
 const prisma = new PrismaClient();
 
+
+// =========================
+//   TAREAS ASIGNADAS
+// =========================
+
+type FrontTareaEstado = "pendiente" | "completado" | "atrasado";
+
+function mapEstadoFront(
+  estado: EstadoTarea,
+  fechaProgramada: Date
+): FrontTareaEstado {
+  const hoy = new Date();
+
+  if (estado === EstadoTarea.COMPLETADA) return "completado";
+
+  const isLate = fechaProgramada < hoy;
+  if (estado === EstadoTarea.VENCIDA || isLate) return "atrasado";
+
+  // PENDIENTE o EN_PROCESO
+  return "pendiente";
+}
+
+
 const GROUP_MAP: Array<{ area: Area; envVar: string }> = [
   { area: Area.ADMIN,      envVar: "GROUP_ADMIN_EMAIL" },
   { area: Area.CONTA,      envVar: "GROUP_CONTA_EMAIL" },
@@ -1264,3 +1287,145 @@ export async function generarTareasAutomaticas(fechaReferencia: Date = new Date(
     );
   }
 }
+
+// GET /api/tareas-asignadas
+// query:
+//   soloPendientes=true/false
+//   todos=true/false  (solo admin ve todos)
+export const listTareasAsignadas = async (req: Request, res: Response) => {
+  try {
+    const userId = req.user?.id as number | undefined;
+    if (!userId) {
+      return res.status(401).json({ error: "No autenticado" });
+    }
+
+    const { soloPendientes, todos } = req.query as {
+      soloPendientes?: string;
+      todos?: string;
+    };
+
+    const onlyPending = soloPendientes === "true";
+
+    // Vemos si el usuario actual puede ver "todos"
+    const trabajadorActual = await prisma.trabajador.findUnique({
+      where: { id_trabajador: userId },
+      select: { email: true, areaInterna: true },
+    });
+
+    const appSuperAdminEmail =
+      process.env.APP_SUPERADMIN_EMAIL?.toLowerCase() ?? "";
+
+    const isAppAdmin =
+      (trabajadorActual?.areaInterna === Area.ADMIN) ||
+      (trabajadorActual?.email.toLowerCase() === appSuperAdminEmail);
+
+    // Si viene ?todos=true y el usuario ES admin → vemos todas las tareas
+    const verTodos = todos === "true" && isAppAdmin;
+
+    const whereTarea: Prisma.TareaAsignadaWhereInput = {};
+
+    if (!verTodos) {
+      // solo tareas del trabajador logueado
+      whereTarea.trabajadorId = userId;
+    }
+
+    if (onlyPending) {
+      // pendientes / en proceso
+      whereTarea.estado = {
+        in: [EstadoTarea.PENDIENTE, EstadoTarea.EN_PROCESO],
+      };
+    }
+
+    const tareas = await prisma.tareaAsignada.findMany({
+      where: whereTarea,
+      include: {
+        tareaPlantilla: true,
+        asignado: {
+          select: {
+            id_trabajador: true,
+            nombre: true,
+            email: true,
+          },
+        },
+      },
+      orderBy: {
+        fechaProgramada: "asc",
+      },
+    });
+
+    // Agrupar por trabajador (asignado)
+    type WorkerBucket = {
+      id_trabajador: number;
+      nombre: string;
+      email: string;
+      tareas: {
+        id: string;
+        nombre: string;
+        vencimiento: string;
+        estado: FrontTareaEstado;
+        comentario?: string;
+      }[];
+    };
+
+    const byWorker = new Map<number, WorkerBucket>();
+
+    for (const ta of tareas) {
+      if (!ta.asignado) continue; // tareas sin asignar → las puedes manejar aparte si quieres
+
+      const wId = ta.asignado.id_trabajador;
+      if (!byWorker.has(wId)) {
+        byWorker.set(wId, {
+          id_trabajador: wId,
+          nombre: ta.asignado.nombre,
+          email: ta.asignado.email,
+          tareas: [],
+        });
+      }
+
+      const bucket = byWorker.get(wId)!;
+
+      const estadoFront = mapEstadoFront(ta.estado, ta.fechaProgramada);
+
+      bucket.tareas.push({
+        id: String(ta.id_tarea_asignada),
+        nombre: ta.tareaPlantilla?.nombre ?? "Tarea sin nombre",
+        vencimiento: ta.fechaProgramada.toISOString(),
+        estado: estadoFront,
+        comentario: ta.comentarios ?? undefined,
+      });
+    }
+
+    // Mapear al formato que usa tu front (Analista / Cliente / Tarea)
+    const analistas = Array.from(byWorker.values()).map((w) => {
+      const total = w.tareas.length;
+      const completadas = w.tareas.filter((t) => t.estado === "completado")
+        .length;
+      const progreso =
+        total > 0 ? Math.round((completadas / total) * 100) : 0;
+
+      return {
+        id: `a-${w.id_trabajador}`,
+        nombre: w.nombre,
+        email: w.email,
+        avatar: w.nombre.charAt(0).toUpperCase(),
+        clientes: [
+          {
+            id: `c-${w.id_trabajador}-pendientes`,
+            nombre: "Tareas pendientes",
+            rut: "",
+            email: w.email,
+            progreso,
+            tareas: w.tareas,
+          },
+        ],
+        cargaTotal: total,
+        completadas,
+      };
+    });
+
+    return res.json({ analistas });
+  } catch (err) {
+    console.error("listTareasAsignadas error:", err);
+    return res.status(500).json({ error: "Error interno listando tareas" });
+  }
+};
