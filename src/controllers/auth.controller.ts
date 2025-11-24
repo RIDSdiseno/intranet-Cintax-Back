@@ -16,31 +16,35 @@ import { listGroupMembersEmails } from "../services/googleDirectoryGroups";
 
 const prisma = new PrismaClient();
 
+const GROUP_MAP: Array<{ area: Area; envVar: string }> = [
+  { area: Area.ADMIN,      envVar: "GROUP_ADMIN_EMAIL" },
+  { area: Area.CONTA,      envVar: "GROUP_CONTA_EMAIL" },
+  { area: Area.RRHH,       envVar: "GROUP_RRHH_EMAIL" },
+  { area: Area.TRIBUTARIO, envVar: "GROUP_TRIBUTARIO_EMAIL" },
+];
+// justo debajo de GROUP_MAP
+const AREA_TO_GROUP_ENV: Record<Area, string> = {
+  [Area.ADMIN]: "GROUP_ADMIN_EMAIL",
+  [Area.CONTA]: "GROUP_CONTA_EMAIL",
+  [Area.RRHH]: "GROUP_RRHH_EMAIL",
+  [Area.TRIBUTARIO]: "GROUP_TRIBUTARIO_EMAIL",
+};
+
 // 🔹 Dado un email, mira en qué grupo(s) está y devuelve el Area correspondiente
 async function resolveAreaFromGroupsByEmail(email: string): Promise<Area | null> {
-  const emailLower = email.toLowerCase();
+  const normalized = email.toLowerCase();
 
-  const groupMap: Array<{ area: Area; envVar: string }> = [
-    { area: Area.ADMIN,      envVar: "GROUP_ADMIN_EMAIL" },
-    { area: Area.CONTA,      envVar: "GROUP_CONTA_EMAIL" },
-    { area: Area.RRHH,       envVar: "GROUP_RRHH_EMAIL" },
-    { area: Area.TRIBUTARIO, envVar: "GROUP_TRIBUTARIO_EMAIL" },
-  ];
-
-  for (const { area, envVar } of groupMap) {
+  for (const { area, envVar } of GROUP_MAP) {
     const groupEmail = process.env[envVar];
-    if (!groupEmail) continue; // si el grupo no está configurado, lo saltamos
+    if (!groupEmail) continue;
 
     try {
       const members = await listGroupMembersEmails(groupEmail);
-      const membersLower = members.map(m => m.toLowerCase());
-
-      if (membersLower.includes(emailLower)) {
-        // 👈 primera coincidencia gana (prioridad: ADMIN > CONTA > RRHH > TRIBUTARIO)
+      if (members.includes(normalized)) {
         return area;
       }
-    } catch (e) {
-      console.error(`Error leyendo miembros del grupo ${groupEmail}`, e);
+    } catch (err) {
+      console.error(`Error leyendo miembros del grupo ${groupEmail}`, err);
     }
   }
 
@@ -315,6 +319,17 @@ export const googleLoginTrabajador = async (req: Request, res: Response) => {
         data: { googleId },
       });
     }
+
+    // Intentamos resolver el área por grupos de Google
+const resolvedArea = await resolveAreaFromGroupsByEmail(email);
+
+if (resolvedArea && trabajador.areaInterna !== resolvedArea) {
+  trabajador = await prisma.trabajador.update({
+    where: { id_trabajador: trabajador.id_trabajador },
+    data: { areaInterna: resolvedArea },
+  });
+}
+
 
     if (!trabajador.status) {
       return res.status(403).json({ error: "Trabajador inactivo" });
@@ -696,44 +711,70 @@ export const listCintax2025Folders = async (req: Request, res: Response) => {
 
 export const listFilesInFolder = async (req: Request, res: Response) => {
   try {
-    const userEmail = req.user?.email?.toLowerCase();
-    if (!userEmail) {
+    const userId = req.user?.id;
+    if (!userId) {
       return res.status(401).json({ error: "No autenticado" });
     }
 
-    console.log("[Drive] listFilesInFolder userEmail:", userEmail,
-      "ADMIN_ENV:", GOOGLE_DRIVE_ADMIN_EMAIL,
-      "isAdminUser:",
-      GOOGLE_DRIVE_ADMIN_EMAIL !== undefined &&
-      userEmail === GOOGLE_DRIVE_ADMIN_EMAIL);
+    // Traemos al trabajador desde la BD para saber su área
+    const trabajador = await prisma.trabajador.findUnique({
+      where: { id_trabajador: userId },
+      select: { email: true, areaInterna: true },
+    });
+
+    if (!trabajador?.email) {
+      return res.status(401).json({ error: "Usuario sin email" });
+    }
+
+    const userEmail = trabajador.email.toLowerCase();
+    const userDomain = userEmail.split("@")[1] ?? "";
+    const userArea = trabajador.areaInterna ?? null;
 
     const folderId = req.params.id;
     if (!folderId) {
       return res.status(400).json({ error: "Falta folderId" });
     }
 
+    // Drive admin (service account impersonando admin)
     const drive = getAdminDriveClient();
 
     const isAdminUser =
       GOOGLE_DRIVE_ADMIN_EMAIL !== undefined &&
       userEmail === GOOGLE_DRIVE_ADMIN_EMAIL;
 
-    // 1) Listar TODO el contenido de la carpeta como ADMIN
+    const pageSize = Number(req.query.pageSize ?? 10);
+    const pageToken = (req.query.pageToken as string | undefined) || undefined;
+
+    // 1) Listamos TODO el contenido de la carpeta como ADMIN
     const resp = await drive.files.list({
       q: `'${folderId}' in parents and trashed = false`,
       fields:
-        "files(id, name, mimeType, modifiedTime, size, webViewLink, iconLink)",
+        "nextPageToken, files(id, name, mimeType, modifiedTime, size, webViewLink, iconLink)",
       orderBy: "name",
+      pageSize,
+      pageToken,
     });
 
     const allFiles = resp.data.files ?? [];
+    const apiNextToken = resp.data.nextPageToken ?? null;
 
-    // ⚡️ Admin ve todo directamente
+    // ⚡ ADMIN: ve todo directamente
     if (isAdminUser) {
-      return res.json({ files: allFiles });
+      return res.json({
+        files: allFiles,
+        nextPageToken: apiNextToken,
+      });
     }
 
-    // 2) Usuario normal: filtrar solo los que el usuario puede ver
+    // ==== USUARIO NORMAL: filtramos por permisos ====
+
+
+const groupEnvVar = userArea ? AREA_TO_GROUP_ENV[userArea] : undefined;
+const groupForUser = groupEnvVar
+  ? process.env[groupEnvVar]?.toLowerCase() ?? null
+  : null;
+
+
     const visibles: typeof allFiles = [];
 
     for (const file of allFiles) {
@@ -748,12 +789,25 @@ export const listFilesInFolder = async (req: Request, res: Response) => {
         const perms = permResp.data.permissions ?? [];
 
         const hasAccess = perms.some((p) => {
-          if (
-            (p.type === "user" || p.type === "group") &&
-            p.emailAddress?.toLowerCase() === userEmail
-          ) {
+          const pEmail = p.emailAddress?.toLowerCase();
+
+          // 1) permiso directo al usuario
+          if (p.type === "user" && pEmail === userEmail) {
             return true;
           }
+
+          // 2) permiso al grupo del área (conta@, rrhh@, etc.)
+          if (p.type === "group" && groupForUser && pEmail === groupForUser) {
+            return true;
+          }
+
+          // 3) OPCIONAL: si compartes por dominio completo (Ej: "cintax.cl")
+          //    descomenta esto SOLO si quieres que cualquiera del dominio vea todo:
+          //
+          // if (p.type === "domain" && p.domain?.toLowerCase() === userDomain) {
+          //   return true;
+          // }
+
           return false;
         });
 
@@ -765,13 +819,17 @@ export const listFilesInFolder = async (req: Request, res: Response) => {
       }
     }
 
-    // 3) Si no hay archivos visibles, devolvemos lista vacía (no 403)
-    return res.json({ files: visibles });
+    // Si no hay visibles, igual devolvemos lista vacía y sin nextPageToken
+    return res.json({
+      files: visibles,
+      nextPageToken: visibles.length > 0 ? apiNextToken : null,
+    });
   } catch (err) {
     console.error("listFilesInFolder error:", err);
     return res.status(500).json({ error: "Error listando archivos" });
   }
 };
+
 
 
 export const uploadToFolder = async (req: Request, res: Response) => {
@@ -845,55 +903,88 @@ export const listMySharedFolders = async (req: Request, res: Response) => {
       yearString = new Date().getFullYear().toString();
     }
 
-    // 1) Resolver ruta base: CINTAX / año
     const basePath = ["CINTAX", yearString];
     const yearFolderId = await resolveFolderPath(drive, basePath);
 
-    // 2) Listar CATEGORÍAS dentro de ese año (CONTA, RRHH, TRIB, etc.)
+    // 1) Listar CATEGORÍAS dentro de ese año (CONTA, RRHH, TRIBUTARIO, etc.)
     const categoriasRes = await drive.files.list({
       q: `'${yearFolderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
       fields: "files(id, name, mimeType, modifiedTime)",
       orderBy: "name",
     });
 
-    const categoriasData: DriveFileList = categoriasRes.data;
-    const categorias: DriveFile[] = categoriasData.files ?? [];
+    const categorias = categoriasRes.data.files ?? [];
+
+    // 2) Buscar el área interna del trabajador
+    const trabajador = await prisma.trabajador.findUnique({
+      where: { id_trabajador: req.user!.id },
+      select: { areaInterna: true },
+    });
 
     const visibleFolders: VisibleFolder[] = [];
 
-    // 3) Para cada categoría decidimos si el usuario la ve o no
-    for (const categoria of categorias) {
-      if (!categoria.id) continue;
+    // 🔹 ADMIN: ve todas las categorías tal cual
+    if (isAdminUser) {
+      for (const categoria of categorias) {
+        if (!categoria.id) continue;
+        const catPathNames = ["CINTAX", yearString, categoria.name ?? ""];
+        const catPathString = catPathNames.join(" / ");
 
-      const categoriaName = categoria.name ?? "";
-      const catPathNames = ["CINTAX", yearString, categoriaName];
-      const catPathString = catPathNames.join(" / ");
-
-      // ⚡ ADMIN: ve TODAS las categorías sin revisar permisos
-      if (isAdminUser) {
         visibleFolders.push({
           id: categoria.id,
-          name: categoriaName,
-          categoria: categoriaName,
+          name: categoria.name ?? "",
+          categoria: categoria.name ?? "",
           modifiedTime: categoria.modifiedTime ?? null,
           pathNames: catPathNames,
           pathString: catPathString,
         });
+      }
+
+      return res.json({
+        year: yearString,
+        basePath,
+        folders: visibleFolders,
+      });
+    }
+
+    // 🔹 Usuario normal: solo su área + al menos una subcarpeta con permiso
+    if (!trabajador?.areaInterna) {
+      // sin areaInterna -> no mostramos nada
+      return res.json({
+        year: yearString,
+        basePath,
+        folders: [],
+      });
+    }
+
+    const expectedName = trabajador.areaInterna.toString().toUpperCase();
+
+    // grupo de área (conta@cintax.cl, rrhh@cintax.cl, etc.)
+    const groupEnvVar = AREA_TO_GROUP_ENV[trabajador.areaInterna];
+    const groupForUser = groupEnvVar
+      ? process.env[groupEnvVar]?.toLowerCase() ?? null
+      : null;
+
+    for (const categoria of categorias) {
+      if (!categoria.id) continue;
+
+      const categoriaName = (categoria.name ?? "").toUpperCase();
+      if (categoriaName !== expectedName) {
+        // no es el área del usuario
         continue;
       }
 
-      // ⚠ USUARIO NORMAL:
-      // Solo mostramos la categoría si tiene al menos UNA subcarpeta
-      // compartida con él (A01, PERFOROCK, etc.)
+      const catPathNames = ["CINTAX", yearString, categoria.name ?? ""];
+      const catPathString = catPathNames.join(" / ");
+
+      // 3) Miramos subcarpetas de esta categoría (A01, PERFOROCK, etc.)
       const subRes = await drive.files.list({
         q: `'${categoria.id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
         fields: "files(id, name, mimeType, modifiedTime)",
         orderBy: "name",
       });
 
-      const subData: DriveFileList = subRes.data;
-      const subFolders: DriveFile[] = subData.files ?? [];
-
+      const subFolders = subRes.data.files ?? [];
       let userHasSomething = false;
 
       for (const folder of subFolders) {
@@ -905,14 +996,20 @@ export const listMySharedFolders = async (req: Request, res: Response) => {
             fields: "permissions(emailAddress,type,domain,role)",
           });
 
-          const permData = permResp.data;
-          const perms: DrivePermission[] = permData.permissions ?? [];
+          const perms = permResp.data.permissions ?? [];
 
           const hasAccess = perms.some((p) => {
-            return (
-              (p.type === "user" || p.type === "group") &&
-              p.emailAddress?.toLowerCase() === userEmail
-            );
+            const pEmail = p.emailAddress?.toLowerCase();
+
+            // 1) permiso directo al usuario
+            if (p.type === "user" && pEmail === userEmail) return true;
+
+            // 2) permiso al grupo del área
+            if (p.type === "group" && groupForUser && pEmail === groupForUser) {
+              return true;
+            }
+
+            return false;
           });
 
           if (hasAccess) {
@@ -924,23 +1021,25 @@ export const listMySharedFolders = async (req: Request, res: Response) => {
         }
       }
 
-      // Si el usuario tiene al menos una subcarpeta dentro, mostramos la CATEGORÍA
-      if (userHasSomething) {
-        visibleFolders.push({
-          id: categoria.id,
-          name: categoriaName,
-          categoria: categoriaName,
-          modifiedTime: categoria.modifiedTime ?? null,
-          pathNames: catPathNames,
-          pathString: catPathString,
-        });
+      // Si NO tiene ninguna subcarpeta con acceso, NO mostramos la categoría
+      if (!userHasSomething) {
+        continue;
       }
+
+      visibleFolders.push({
+        id: categoria.id,
+        name: categoria.name ?? "",
+        categoria: categoria.name ?? "",
+        modifiedTime: categoria.modifiedTime ?? null,
+        pathNames: catPathNames,
+        pathString: catPathString,
+      });
     }
 
     return res.json({
       year: yearString,
       basePath,
-      folders: visibleFolders, // ← ahora son CONTA, RRHH, TRIB, ...
+      folders: visibleFolders,
     });
   } catch (err) {
     console.error("listMySharedFolders error:", err);
