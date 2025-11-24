@@ -1,5 +1,5 @@
 import type { Request, Response } from "express";
-import {Prisma, PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient, Area, FrecuenciaTarea, EstadoTarea } from "@prisma/client";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import type { Secret } from "jsonwebtoken";
@@ -11,9 +11,92 @@ import { syncTicketsFromFreshdesk } from "../services/freshdeskService";
 import { generateDriveAuthUrl, getAdminDriveClient, getDriveClientForUser, oauth2Client } from "../services/googleDrive";
 import { resolveFolderPath } from "../services/googleDrivePath";
 import type { drive_v3 } from "googleapis";
+import { listGroupMembersEmails } from "../services/googleDirectoryGroups";
 
 
 const prisma = new PrismaClient();
+
+async function syncAreasFromGroupsCore(clearOthers: boolean = false) {
+  const groupMap: Array<{ area: Area; envVar: string }> = [
+    { area: Area.ADMIN,       envVar: "GROUP_ADMIN_EMAIL" },
+    { area: Area.CONTA,       envVar: "GROUP_CONTA_EMAIL" },
+    { area: Area.RRHH,        envVar: "GROUP_RRHH_EMAIL" },
+    { area: Area.TRIBUTARIO,  envVar: "GROUP_TRIBUTARIO_EMAIL" },
+  ];
+
+  const emailToArea = new Map<string, Area>();
+  const allEmails: string[] = [];
+
+  for (const { area, envVar } of groupMap) {
+    const groupEmail = process.env[envVar];
+    if (!groupEmail) continue;
+
+    const members = await listGroupMembersEmails(groupEmail);
+    for (const rawEmail of members) {
+      const email = rawEmail.toLowerCase();
+      allEmails.push(email);
+
+      if (!emailToArea.has(email)) {
+        emailToArea.set(email, area);
+      }
+    }
+  }
+
+  if (emailToArea.size === 0) {
+    return {
+      message: "No se encontraron miembros en los grupos",
+      groupsConfigured: [],
+      emailCount: 0,
+      updated: 0,
+      cleared: 0,
+    };
+  }
+
+  const emails = Array.from(emailToArea.keys());
+
+  const workers = await prisma.trabajador.findMany({
+    where: { email: { in: emails } },
+    select: { id_trabajador: true, email: true, areaInterna: true },
+  });
+
+  let updated = 0;
+
+  for (const w of workers) {
+    const desiredArea = emailToArea.get(w.email.toLowerCase());
+    if (!desiredArea) continue;
+
+    if (w.areaInterna !== desiredArea) {
+      await prisma.trabajador.update({
+        where: { id_trabajador: w.id_trabajador },
+        data: { areaInterna: desiredArea },
+      });
+      updated++;
+    }
+  }
+
+  let cleared = 0;
+  if (clearOthers) {
+    const res = await prisma.trabajador.updateMany({
+      where: {
+        areaInterna: { in: [Area.ADMIN, Area.CONTA, Area.RRHH, Area.TRIBUTARIO] },
+        email: { notIn: emails },
+      },
+      data: { areaInterna: null },
+    });
+    cleared = res.count;
+  }
+
+  return {
+    message: "Sync de áreas completado",
+    groupsConfigured: groupMap
+      .filter(g => process.env[g.envVar])
+      .map(g => ({ area: g.area, group: process.env[g.envVar] })),
+    emailCount: emailToArea.size,
+    updated,
+    cleared,
+  };
+}
+
 
 /* =========================
    CONFIG / CONSTANTES
@@ -819,3 +902,219 @@ export const listMySharedFolders = async (req: Request, res: Response) => {
       .json({ error: "Error listando carpetas compartidas" });
   }
 };
+
+export const syncAreasFromGroups = async (req: Request, res: Response) => {
+  try {
+    const { clearOthers } = req.body as { clearOthers?: boolean };
+    const result = await syncAreasFromGroupsCore(!!clearOthers);
+    return res.json(result);
+  } catch (err) {
+    console.error("syncAreasFromGroups error:", err);
+    return res.status(500).json({ error: "Error sincronizando áreas desde grupos" });
+  }
+};
+
+// 👇 exportamos la función core para usarla en el cron
+export { syncAreasFromGroupsCore };
+
+
+// util: primer día del mes
+function startOfMonth(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), 1, 0, 0, 0, 0);
+}
+
+// util: primer día del mes siguiente
+function startOfNextMonth(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth() + 1, 1, 0, 0, 0, 0);
+}
+
+// util: lunes de la semana de `date` (asumiendo lunes=1)
+function startOfWeek(date: Date): Date {
+  const d = new Date(date);
+  const day = d.getDay() || 7; // domingo=0 → 7
+  d.setHours(0, 0, 0, 0);
+  if (day > 1) d.setDate(d.getDate() - (day - 1));
+  return d;
+}
+
+// util: lunes de la semana siguiente
+function startOfNextWeek(date: Date): Date {
+  const start = startOfWeek(date);
+  start.setDate(start.getDate() + 7);
+  return start;
+}
+
+// calcula próxima fecha de vencimiento según plantilla
+function getNextDueDate(
+  tpl: {
+    frecuencia: FrecuenciaTarea;
+    diaMesVencimiento: number | null;
+    diaSemanaVencimiento: number | null;
+  },
+  today: Date
+): Date | null {
+  if (tpl.frecuencia === FrecuenciaTarea.MENSUAL && tpl.diaMesVencimiento) {
+    const day = tpl.diaMesVencimiento;
+    const thisMonthDue = new Date(
+      today.getFullYear(),
+      today.getMonth(),
+      day,
+      9,
+      0,
+      0,
+      0
+    );
+
+    if (thisMonthDue >= today) {
+      return thisMonthDue;
+    }
+    // si ya pasó, siguiente mes
+    return new Date(
+      today.getFullYear(),
+      today.getMonth() + 1,
+      day,
+      9,
+      0,
+      0,
+      0
+    );
+  }
+
+  if (tpl.frecuencia === FrecuenciaTarea.SEMANAL && tpl.diaSemanaVencimiento) {
+    const targetDow = tpl.diaSemanaVencimiento; // 1-7 (ej: viernes=5)
+    const base = new Date(today);
+    base.setHours(9, 0, 0, 0);
+
+    const todayDow = base.getDay() || 7; // 1-7
+
+    const diff = targetDow - todayDow;
+    if (diff >= 0) {
+      base.setDate(base.getDate() + diff);
+      return base;
+    } else {
+      // semana siguiente
+      base.setDate(base.getDate() + 7 + diff);
+      return base;
+    }
+  }
+
+  if (tpl.frecuencia === FrecuenciaTarea.UNICA) {
+    // si quieres manejar una fecha fija, se podría agregar otro campo en TareaPlantilla.
+    return null;
+  }
+
+  return null;
+}
+
+export async function generarTareasAutomaticas(fechaReferencia: Date = new Date()) {
+  // 1) traer plantillas activas con los campos que necesitamos
+  const plantillas = await prisma.tareaPlantilla.findMany({
+    where: { activo: true },
+    select: {
+      id_tarea_plantilla: true,
+      area: true,
+      frecuencia: true,
+      diaMesVencimiento: true,
+      diaSemanaVencimiento: true,
+      responsableDefaultId: true,
+      nombre: true,
+    },
+  });
+
+  // 2) Agrupar trabajadores activos por áreaInterna
+  const workersByArea: Record<Area, { id_trabajador: number }[]> = {
+    [Area.ADMIN]: [],
+    [Area.CONTA]: [],
+    [Area.RRHH]: [],
+    [Area.TRIBUTARIO]: [],
+  };
+
+  const allWorkers = await prisma.trabajador.findMany({
+    where: { status: true, areaInterna: { not: null } },
+    select: { id_trabajador: true, areaInterna: true },
+  });
+
+  for (const w of allWorkers) {
+    if (!w.areaInterna) continue;
+    workersByArea[w.areaInterna].push({ id_trabajador: w.id_trabajador });
+  }
+
+  // 3) índices para round-robin por área
+  const areaIndex: Partial<Record<Area, number>> = {
+    [Area.ADMIN]: 0,
+    [Area.CONTA]: 0,
+    [Area.RRHH]: 0,
+    [Area.TRIBUTARIO]: 0,
+  };
+
+  // 4) Recorrer plantillas
+  for (const tpl of plantillas) {
+    const dueDate = getNextDueDate(
+      {
+        frecuencia: tpl.frecuencia,
+        diaMesVencimiento: tpl.diaMesVencimiento,
+        diaSemanaVencimiento: tpl.diaSemanaVencimiento,
+      },
+      fechaReferencia
+    );
+    if (!dueDate) continue;
+
+    // 5) Evitar duplicar: ver si ya existe una tarea para esta plantilla
+    let startPeriod: Date;
+    let endPeriod: Date;
+
+    if (tpl.frecuencia === FrecuenciaTarea.MENSUAL) {
+      startPeriod = startOfMonth(dueDate);
+      endPeriod = startOfNextMonth(dueDate);
+    } else if (tpl.frecuencia === FrecuenciaTarea.SEMANAL) {
+      startPeriod = startOfWeek(dueDate);
+      endPeriod = startOfNextWeek(dueDate);
+    } else {
+      // UNICA u otra → rango gigante, si ya hay una, no crear más
+      startPeriod = new Date(2000, 0, 1);
+      endPeriod = new Date(2100, 0, 1);
+    }
+
+    const yaExiste = await prisma.tareaAsignada.findFirst({
+      where: {
+        tareaPlantillaId: tpl.id_tarea_plantilla,
+        fechaProgramada: {
+          gte: startPeriod,
+          lt: endPeriod,
+        },
+      },
+    });
+
+    if (yaExiste) continue;
+
+    // 6) Decidir a quién asignar
+    let trabajadorId: number | null = null;
+
+    if (tpl.responsableDefaultId) {
+      trabajadorId = tpl.responsableDefaultId;
+    } else if (tpl.area && workersByArea[tpl.area]?.length) {
+      const arr = workersByArea[tpl.area];
+      const idx = areaIndex[tpl.area] ?? 0;
+      trabajadorId = arr[idx % arr.length].id_trabajador;
+      areaIndex[tpl.area] = idx + 1;
+    }
+
+    // 7) Crear la tarea
+    await prisma.tareaAsignada.create({
+      data: {
+        tareaPlantillaId: tpl.id_tarea_plantilla,
+        fechaProgramada: dueDate,
+        trabajadorId,
+        estado: EstadoTarea.PENDIENTE,
+      },
+    });
+
+    console.log(
+      `Creada tarea para plantilla ${tpl.nombre} (${tpl.id_tarea_plantilla}) con fecha ${dueDate
+        .toISOString()
+        .slice(0, 10)} asignada a ${
+        trabajadorId ? `trabajador ${trabajadorId}` : "SIN asignar"
+      }`
+    );
+  }
+}

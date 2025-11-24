@@ -10,8 +10,12 @@
     "prisma:g": "prisma generate",
     "prisma:m": "prisma migrate dev --name init",
     "prisma:studio": "prisma studio",
+    "prisma:seed": "ts-node prisma/seed.ts",
     "seed": "prisma db seed",
     "prepare": "prisma generate"
+  },
+  "prisma": {
+    "seed": "ts-node prisma/seed.ts"
   },
   "repository": {
     "type": "git",
@@ -38,6 +42,7 @@
     "jsonwebtoken": "^9.0.2",
     "morgan": "^1.10.1",
     "multer": "^2.0.2",
+    "node-cron": "^4.2.1",
     "npm": "^11.6.2"
   },
   "devDependencies": {

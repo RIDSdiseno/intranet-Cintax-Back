@@ -1,7 +1,7 @@
 import { Router } from "express";
 import multer from "multer";
 import { authGuard } from "../middlewares/auth.middleware";
-import { connectDrive, driveCallback, listCintax2025Folders, listFilesInFolder, listMySharedFolders, uploadToFolder  } from "../controllers/auth.controller";
+import { connectDrive, driveCallback, listCintax2025Folders, listFilesInFolder, listMySharedFolders, syncAreasFromGroups, uploadToFolder  } from "../controllers/auth.controller";
 
 const r = Router();
 
@@ -21,5 +21,8 @@ r.post(
   upload.single("file"),
   uploadToFolder
 );
+
+r.post("/trabajadores/sync-areas", authGuard,syncAreasFromGroups);
+
 
 export default r

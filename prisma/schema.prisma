@@ -15,17 +15,23 @@ datasource db {
 
 
 model Trabajador {
-  id_trabajador Int            @id @default(autoincrement())
-  nombre        String
-  email         String         @unique
-  passwordHash  String?        // null si solo usa Google
-  googleId      String?        @unique
-  status        Boolean        @default(true)
-  createdAt     DateTime       @default(now())
+  id_trabajador      Int             @id @default(autoincrement())
+  nombre             String
+  email              String          @unique
+  passwordHash       String?
+  googleId           String?         @unique
+  status             Boolean         @default(true)
+  createdAt          DateTime        @default(now())
   googleRefreshToken String?
-  
-  refreshTokens RefreshToken[]
-  tickets       Ticket[] 
+  areaInterna        Area?
+  refreshTokens      RefreshToken[]
+  tickets            Ticket[]
+
+  // ya la tenías:
+  tareasAsignadas    TareaAsignada[] @relation("TrabajadorTareas")
+
+  // NUEVO: tareas donde es responsable por defecto
+  tareasDefault      TareaPlantilla[] @relation("TareaResponsableDefault")
 }
 
 model RefreshToken {
@@ -52,4 +58,73 @@ model Ticket {
   trabajadorId    Int?
   createdAt       DateTime    @default(now())
   updatedAt       DateTime    @updatedAt
+}
+
+
+model TareaPlantilla {
+  id_tarea_plantilla Int           @id @default(autoincrement())
+  area               Area
+  nombre             String
+  detalle            String
+
+  // TEXTOS originales (para referencia interna, Excel, etc.)
+  frecuenciaTexto    String?
+  plazoMaximoTexto   String?
+
+  // CAMPOS ESTRUCTURADOS para automatizar
+  frecuencia         FrecuenciaTarea
+  diaMesVencimiento  Int?          // ej: 15, 25, 30 para las mensuales
+  diaSemanaVencimiento Int?        // 1=lunes ... 7=domingo (para semanales)
+
+  presentacion       Presentacion
+  activo             Boolean       @default(true)
+
+  // Responsable por defecto
+  responsableDefault   Trabajador?   @relation("TareaResponsableDefault", fields: [responsableDefaultId], references: [id_trabajador])
+  responsableDefaultId Int?
+
+  tareasAsignadas    TareaAsignada[]
+}
+
+model TareaAsignada {
+  id_tarea_asignada Int           @id @default(autoincrement())
+
+  tareaPlantilla     TareaPlantilla @relation(fields: [tareaPlantillaId], references: [id_tarea_plantilla])
+  tareaPlantillaId   Int
+
+  asignado           Trabajador?    @relation("TrabajadorTareas", fields: [trabajadorId], references: [id_trabajador])
+  trabajadorId       Int?
+
+  estado             EstadoTarea    @default(PENDIENTE)
+  fechaProgramada    DateTime
+  fechaComplecion    DateTime?
+  comentarios        String?
+
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+}
+
+enum Area {
+  ADMIN
+  CONTA
+  RRHH
+  TRIBUTARIO
+}
+
+enum Presentacion {
+  CLIENTE
+  INTERNO
+}
+
+enum EstadoTarea {
+  PENDIENTE
+  EN_PROCESO
+  COMPLETADA
+  VENCIDA
+}
+
+enum FrecuenciaTarea {
+  MENSUAL
+  SEMANAL
+  UNICA
 }
