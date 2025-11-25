@@ -127,11 +127,11 @@ const tareasPlantillaData = [
     area: "CONTA",
     nombre: "Cierre contabilización libro compra",
     detalle: "Contabilzación de todas las facturas RCV en ERP",
-    frecuenciaTexto: "Semanal",
+    frecuenciaTexto: "Mensual",
     plazoMaximoTexto: "5 de cada mes / sobre el mes anterior",
     presentacion: "INTERNO",
-    frecuencia: "SEMANAL",
-    diaMesVencimiento: null,
+    frecuencia: "MENSUAL",
+    diaMesVencimiento: 5,
     diaSemanaVencimiento: null,
     activo: true,
   },
@@ -139,11 +139,11 @@ const tareasPlantillaData = [
     area: "CONTA",
     nombre: "Cierre contabilización libro Venta",
     detalle: "Contabilzación de todas las facturas RCV en ERP",
-    frecuenciaTexto: "Semanal",
+    frecuenciaTexto: "Mensual",
     plazoMaximoTexto: "5 de cada mes / sobre el mes anterior",
     presentacion: "INTERNO",
-    frecuencia: "SEMANAL",
-    diaMesVencimiento: null,
+    frecuencia: "MENSUAL",
+    diaMesVencimiento: 5,
     diaSemanaVencimiento: null,
     activo: true,
   },
@@ -163,11 +163,11 @@ const tareasPlantillaData = [
     area: "CONTA",
     nombre: "Conciliación RCV - ERP",
     detalle: "Informe de diferencias entre RCV y ERP",
-    frecuenciaTexto: "Semanal",
+    frecuenciaTexto: "Mensual",
     plazoMaximoTexto: "5 de cada mes / sobre el mes anterior",
     presentacion: "INTERNO",
-    frecuencia: "SEMANAL",
-    diaMesVencimiento: null,
+    frecuencia: "MENSUAL",
+    diaMesVencimiento: 5,
     diaSemanaVencimiento: null,
     activo: true,
   },
@@ -216,7 +216,7 @@ const tareasPlantillaData = [
     presentacion: "CLIENTE",
     frecuencia: "SEMANAL",
     diaMesVencimiento: null,
-    diaSemanaVencimiento: null, // aquí puedes luego fijar un día de la semana
+    diaSemanaVencimiento: 5, // aquí puedes luego fijar un día de la semana
     activo: true,
   },
   {
@@ -270,12 +270,17 @@ const tareasPlantillaData = [
 ] as const;
 
 async function main() {
+  await prisma.tareaAsignada.deleteMany();      // opcional si quieres limpiar tareas
+  await prisma.tareaPlantilla.deleteMany();     // 👈 limpia plantillas
+
   await prisma.tareaPlantilla.createMany({
     data: tareasPlantillaData as any,
     skipDuplicates: true,
   });
-  console.log("✅ Tareas plantilla insertadas/actualizadas");
+
+  console.log("✅ Tareas plantilla insertadas");
 }
+
 
 main()
   .catch((e) => {

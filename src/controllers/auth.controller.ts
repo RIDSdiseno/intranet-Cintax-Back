@@ -750,20 +750,21 @@ export const listFilesInFolder = async (req: Request, res: Response) => {
     }
 
     const userEmail = trabajador.email.toLowerCase();
-    const userDomain = userEmail.split("@")[1] ?? "";
-    const userArea = trabajador.areaInterna ?? null;
+const userDomain = userEmail.split("@")[1] ?? "";
+const userArea = trabajador.areaInterna ?? null;
 
-    const folderId = req.params.id;
-    if (!folderId) {
-      return res.status(400).json({ error: "Falta folderId" });
-    }
+const folderId = req.params.id;
+if (!folderId) {
+  return res.status(400).json({ error: "Falta folderId" });
+}
 
-    // Drive admin (service account impersonando admin)
-    const drive = getAdminDriveClient();
+const drive = getAdminDriveClient();
 
-    const isAdminUser =
-      GOOGLE_DRIVE_ADMIN_EMAIL !== undefined &&
-      userEmail === GOOGLE_DRIVE_ADMIN_EMAIL;
+// 👇 ahora cualquier trabajador con areaInterna ADMIN es admin de la app
+const isAdminUser =
+  trabajador.areaInterna === Area.ADMIN ||
+  (GOOGLE_DRIVE_ADMIN_EMAIL !== undefined &&
+   userEmail === GOOGLE_DRIVE_ADMIN_EMAIL);
 
     const pageSize = Number(req.query.pageSize ?? 10);
     const pageToken = (req.query.pageToken as string | undefined) || undefined;
@@ -916,10 +917,6 @@ export const listMySharedFolders = async (req: Request, res: Response) => {
 
     const drive = getAdminDriveClient();
 
-    const isAdminUser =
-      GOOGLE_DRIVE_ADMIN_EMAIL !== undefined &&
-      userEmail === GOOGLE_DRIVE_ADMIN_EMAIL;
-
     // Año por URL o año actual
     let yearString = req.params.year as string | undefined;
     if (!yearString) {
@@ -938,13 +935,21 @@ export const listMySharedFolders = async (req: Request, res: Response) => {
 
     const categorias = categoriasRes.data.files ?? [];
 
-    // 2) Buscar el área interna del trabajador
+    // 2) Buscar el trabajador para conocer su áreaInterna
     const trabajador = await prisma.trabajador.findUnique({
       where: { id_trabajador: req.user!.id },
-      select: { areaInterna: true },
+      select: { email: true, areaInterna: true },
     });
 
     const visibleFolders: VisibleFolder[] = [];
+
+    // 🔹 ADMIN de la app:
+    //    - si el trabajador tiene areaInterna = ADMIN
+    //    - o si su email coincide con GOOGLE_DRIVE_ADMIN_EMAIL
+    const isAdminUser =
+      trabajador?.areaInterna === Area.ADMIN ||
+      (GOOGLE_DRIVE_ADMIN_EMAIL !== undefined &&
+        userEmail === GOOGLE_DRIVE_ADMIN_EMAIL);
 
     // 🔹 ADMIN: ve todas las categorías tal cual
     if (isAdminUser) {
@@ -970,9 +975,8 @@ export const listMySharedFolders = async (req: Request, res: Response) => {
       });
     }
 
-    // 🔹 Usuario normal: solo su área + al menos una subcarpeta con permiso
+    // 🔹 Usuario normal: si no tiene áreaInterna, no mostramos nada
     if (!trabajador?.areaInterna) {
-      // sin areaInterna -> no mostramos nada
       return res.json({
         year: yearString,
         basePath,
@@ -980,14 +984,16 @@ export const listMySharedFolders = async (req: Request, res: Response) => {
       });
     }
 
+    // Nombre de la categoría que esperamos (CONTA, RRHH, TRIBUTARIO...)
     const expectedName = trabajador.areaInterna.toString().toUpperCase();
 
-    // grupo de área (conta@cintax.cl, rrhh@cintax.cl, etc.)
+    // Grupo del área (conta@..., rrhh@..., etc.)
     const groupEnvVar = AREA_TO_GROUP_ENV[trabajador.areaInterna];
     const groupForUser = groupEnvVar
       ? process.env[groupEnvVar]?.toLowerCase() ?? null
       : null;
 
+    // 3) Recorremos categorías y dejamos SOLO la del área del usuario
     for (const categoria of categorias) {
       if (!categoria.id) continue;
 
@@ -1000,7 +1006,7 @@ export const listMySharedFolders = async (req: Request, res: Response) => {
       const catPathNames = ["CINTAX", yearString, categoria.name ?? ""];
       const catPathString = catPathNames.join(" / ");
 
-      // 3) Miramos subcarpetas de esta categoría (A01, PERFOROCK, etc.)
+      // 4) Miramos subcarpetas de esta categoría (A01, PERFOROCK, etc.)
       const subRes = await drive.files.list({
         q: `'${categoria.id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
         fields: "files(id, name, mimeType, modifiedTime)",
@@ -1027,7 +1033,7 @@ export const listMySharedFolders = async (req: Request, res: Response) => {
             // 1) permiso directo al usuario
             if (p.type === "user" && pEmail === userEmail) return true;
 
-            // 2) permiso al grupo del área
+            // 2) permiso al grupo del área (conta@, rrhh@, etc.)
             if (p.type === "group" && groupForUser && pEmail === groupForUser) {
               return true;
             }
@@ -1037,7 +1043,7 @@ export const listMySharedFolders = async (req: Request, res: Response) => {
 
           if (hasAccess) {
             userHasSomething = true;
-            break; // ya sabemos que esta categoría le sirve
+            break; // ya sabemos que esta categoría le sirve al usuario
           }
         } catch (permErr) {
           console.error("Error leyendo permisos de carpeta", folder.id, permErr);
