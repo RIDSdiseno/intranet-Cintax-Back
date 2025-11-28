@@ -1,20 +1,37 @@
 import { Router } from "express";
 import multer from "multer";
 import { authGuard } from "../middlewares/auth.middleware";
-import { connectDrive, driveCallback, listCintax2025Folders, listFilesInFolder, listMySharedFolders, syncAreasFromGroups, uploadToFolder  } from "../controllers/auth.controller";
+import {
+  connectDrive,
+  driveCallback,
+  listCintax2025Folders,
+  listFilesInFolder,
+  listMySharedFolders,
+  listMyRutFolders,        // 👈 NUEVO
+  syncAreasFromGroups,
+  uploadToFolder,
+} from "../controllers/auth.controller";
 
 const r = Router();
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 20 * 1024 * 1024 }, // 20 MB por ejemplo
+  limits: { fileSize: 20 * 1024 * 1024 }, // 20 MB
 });
 
-r.get("/connect",authGuard,connectDrive)
-r.get("/callback",driveCallback)
+// OAuth Google Drive
+r.get("/connect", authGuard, connectDrive);
+r.get("/callback", driveCallback);
 
-r.get("/cintax/:year",authGuard,listMySharedFolders)
-r.get("/folder/:id/files",authGuard,listFilesInFolder)
+// Carpetas CINTAX visibles (por área/permisos) -> lo usas en DrivePage
+r.get("/cintax/:year", authGuard, listMySharedFolders);
+
+// 🔹 NUEVO: Carpetas de RUT (subcarpetas de las categorías) visibles para el usuario
+//    Esto es lo que vas a consumir desde la página de Tareas
+r.get("/my-ruts/:year", authGuard, listMyRutFolders);
+
+// Archivos dentro de una carpeta + upload
+r.get("/folder/:id/files", authGuard, listFilesInFolder);
 r.post(
   "/folder/:id/upload",
   authGuard,
@@ -22,7 +39,7 @@ r.post(
   uploadToFolder
 );
 
-r.post("/trabajadores/sync-areas", authGuard,syncAreasFromGroups);
+// Sync de áreas según grupos de Google
+r.post("/trabajadores/sync-areas", authGuard, syncAreasFromGroups);
 
-
-export default r
+export default r;
