@@ -80,6 +80,12 @@ model TareaAsignada {
   asignado          Trabajador?    @relation("TrabajadorTareas", fields: [trabajadorId], references: [id_trabajador])
 }
 
+enum TipoRelacion {
+  CLIENTES
+  PROVEEDORES
+  INTERNO
+}
+
 enum Area {
   CONTA
   ADMIN
@@ -103,10 +109,4 @@ enum FrecuenciaTarea {
   MENSUAL
   SEMANAL
   UNICA
-}
-
-enum TipoRelacion {
-  CLIENTES
-  PROVEEDORES
-  INTERNO
 }
