@@ -38,6 +38,11 @@ function mapEstadoFront(
   return "pendiente";
 }
 
+const MULTI_AREA_USERS: string[] = (process.env.DRIVE_MULTI_AREA_USERS || "")
+  .split(",")
+  .map((e) => e.trim().toLowerCase())
+  .filter(Boolean);
+
 
 const GROUP_MAP: Array<{ area: Area; envVar: string }> = [
   { area: Area.ADMIN,      envVar: "GROUP_ADMIN_EMAIL" },
@@ -1078,7 +1083,6 @@ export const listMySharedFolders = async (req: Request, res: Response) => {
   }
 };
 
-// debajo de listMySharedFolders, por ejemplo
 
 export const listMyRutFolders = async (req: Request, res: Response) => {
   try {
@@ -1116,7 +1120,7 @@ export const listMyRutFolders = async (req: Request, res: Response) => {
     const visibleRutFolders: {
       id: string;
       name: string;
-      categoria: string;
+      categoria: string | null;
       modifiedTime?: string | null;
       pathNames: string[];
       pathString: string;
@@ -1125,9 +1129,42 @@ export const listMyRutFolders = async (req: Request, res: Response) => {
     const isAdminUser =
       trabajador?.areaInterna === Area.ADMIN ||
       (GOOGLE_DRIVE_ADMIN_EMAIL !== undefined &&
-        userEmail === GOOGLE_DRIVE_ADMIN_EMAIL);
+        userEmail === GOOGLE_DRIVE_ADMIN_EMAIL?.toLowerCase());
 
-    // Grupo del área (conta@..., rrhh@..., etc.) para usuarios normales
+    // 👇 usuarios que deben partir desde CATEGORÍAS
+    const isMultiAreaUser = MULTI_AREA_USERS.includes(userEmail);
+
+    const shouldStartAtCategorias = isAdminUser || isMultiAreaUser;
+
+    // 🔹 CASO 1: usuarios multi-área (admin / supervisores)
+    // → devolvemos SOLO categorías como "folders"
+    if (shouldStartAtCategorias) {
+      for (const categoria of categorias) {
+        if (!categoria.id) continue;
+
+        const categoriaName = categoria.name ?? "";
+        const pathNames = ["CINTAX", yearString, categoriaName];
+
+        visibleRutFolders.push({
+          id: categoria.id,
+          name: categoriaName,
+          categoria: null, // 👈 importante para que el breadcrumb no repita
+          modifiedTime: categoria.modifiedTime ?? null,
+          pathNames,
+          pathString: pathNames.join(" / "),
+        });
+      }
+
+      return res.json({
+        year: yearString,
+        basePath,
+        startLevel: "categorias" as const,
+        folders: visibleRutFolders,
+      });
+    }
+
+    // 🔹 CASO 2: usuario normal de un área → devolvemos carpetas de RUT
+
     const groupEnvVar = trabajador?.areaInterna
       ? AREA_TO_GROUP_ENV[trabajador.areaInterna]
       : undefined;
@@ -1154,8 +1191,8 @@ export const listMyRutFolders = async (req: Request, res: Response) => {
       for (const folder of subFolders) {
         if (!folder.id) continue;
 
-        // ADMIN ve todo
-        if (isAdminUser) {
+        // ADMIN (pero NO multi-área adicional) ve todo
+        if (isAdminUser && !isMultiAreaUser) {
           const pathNames = [...catPathNames, folder.name ?? ""];
           visibleRutFolders.push({
             id: folder.id,
@@ -1203,7 +1240,11 @@ export const listMyRutFolders = async (req: Request, res: Response) => {
             });
           }
         } catch (permErr) {
-          console.error("Error leyendo permisos de carpeta RUT", folder.id, permErr);
+          console.error(
+            "Error leyendo permisos de carpeta RUT",
+            folder.id,
+            permErr
+          );
         }
       }
     }
@@ -1211,6 +1252,7 @@ export const listMyRutFolders = async (req: Request, res: Response) => {
     return res.json({
       year: yearString,
       basePath,
+      startLevel: "rut" as const,
       folders: visibleRutFolders,
     });
   } catch (err) {
@@ -1220,6 +1262,7 @@ export const listMyRutFolders = async (req: Request, res: Response) => {
       .json({ error: "Error listando carpetas de RUT" });
   }
 };
+
 
 
 export const syncAreasFromGroups = async (req: Request, res: Response) => {

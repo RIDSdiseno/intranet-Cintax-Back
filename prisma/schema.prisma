@@ -1,9 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -13,100 +7,82 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-
 model Trabajador {
-  id_trabajador      Int             @id @default(autoincrement())
+  id_trabajador      Int              @id @default(autoincrement())
   nombre             String
-  email              String          @unique
+  email              String           @unique
   passwordHash       String?
-  googleId           String?         @unique
-  status             Boolean         @default(true)
-  createdAt          DateTime        @default(now())
+  googleId           String?          @unique
+  status             Boolean          @default(true)
+  createdAt          DateTime         @default(now())
   googleRefreshToken String?
   areaInterna        Area?
+  lastActivityAt     DateTime?
+  tipoRelacion       TipoRelacion?
   refreshTokens      RefreshToken[]
-  tickets            Ticket[]
-
-  // ya la tenías:
-  tareasAsignadas    TareaAsignada[] @relation("TrabajadorTareas")
-
-  // NUEVO: tareas donde es responsable por defecto
+  tareasAsignadas    TareaAsignada[]  @relation("TrabajadorTareas")
   tareasDefault      TareaPlantilla[] @relation("TareaResponsableDefault")
+  tickets            Ticket[]
 }
 
 model RefreshToken {
-  id           Int         @id @default(autoincrement())
+  id           Int        @id @default(autoincrement())
   tokenHash    String
   expiresAt    DateTime
-  createdAt    DateTime    @default(now())
-
-  trabajador   Trabajador  @relation(fields: [trabajadorId], references: [id_trabajador], onDelete: Cascade)
+  createdAt    DateTime   @default(now())
   trabajadorId Int
+  trabajador   Trabajador @relation(fields: [trabajadorId], references: [id_trabajador], onDelete: Cascade)
 }
-
 
 model Ticket {
-  id_ticket       Int         @id @default(autoincrement())
-  subject         String
-  description     String
-  categoria       String      // "contabilidad" | "tributario" | "otros"
-  estado          String      // "open", "pending", "resolved"... (puedes mapear desde Freshdesk)
-  prioridad       Int?        // 1–4 en Freshdesk
-  requesterEmail  String
-  freshdeskId     Int?        @unique
-  trabajador      Trabajador? @relation(fields: [trabajadorId], references: [id_trabajador])
-  trabajadorId    Int?
-  createdAt       DateTime    @default(now())
-  updatedAt       DateTime    @updatedAt
+  id_ticket      Int         @id @default(autoincrement())
+  subject        String
+  description    String
+  categoria      String
+  estado         String
+  prioridad      Int?
+  requesterEmail String
+  freshdeskId    Int?        @unique
+  trabajadorId   Int?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  trabajador     Trabajador? @relation(fields: [trabajadorId], references: [id_trabajador])
 }
 
-
 model TareaPlantilla {
-  id_tarea_plantilla Int           @id @default(autoincrement())
-  area               Area
-  nombre             String
-  detalle            String
-
-  // TEXTOS originales (para referencia interna, Excel, etc.)
-  frecuenciaTexto    String?
-  plazoMaximoTexto   String?
-
-  // CAMPOS ESTRUCTURADOS para automatizar
-  frecuencia         FrecuenciaTarea
-  diaMesVencimiento  Int?          // ej: 15, 25, 30 para las mensuales
-  diaSemanaVencimiento Int?        // 1=lunes ... 7=domingo (para semanales)
-
-  presentacion       Presentacion
-  activo             Boolean       @default(true)
-
-  // Responsable por defecto
-  responsableDefault   Trabajador?   @relation("TareaResponsableDefault", fields: [responsableDefaultId], references: [id_trabajador])
+  id_tarea_plantilla   Int             @id @default(autoincrement())
+  area                 Area
+  nombre               String
+  detalle              String
+  frecuenciaTexto      String?
+  plazoMaximoTexto     String?
+  frecuencia           FrecuenciaTarea
+  diaMesVencimiento    Int?
+  diaSemanaVencimiento Int?
+  presentacion         Presentacion
+  activo               Boolean         @default(true)
   responsableDefaultId Int?
-
-  tareasAsignadas    TareaAsignada[]
+  tareasAsignadas      TareaAsignada[]
+  responsableDefault   Trabajador?     @relation("TareaResponsableDefault", fields: [responsableDefaultId], references: [id_trabajador])
 }
 
 model TareaAsignada {
-  id_tarea_asignada Int           @id @default(autoincrement())
-
-  tareaPlantilla     TareaPlantilla @relation(fields: [tareaPlantillaId], references: [id_tarea_plantilla])
-  tareaPlantillaId   Int
-
-  asignado           Trabajador?    @relation("TrabajadorTareas", fields: [trabajadorId], references: [id_trabajador])
-  trabajadorId       Int?
-
-  estado             EstadoTarea    @default(PENDIENTE)
-  fechaProgramada    DateTime
-  fechaComplecion    DateTime?
-  comentarios        String?
-
-  createdAt          DateTime       @default(now())
-  updatedAt          DateTime       @updatedAt
+  id_tarea_asignada Int            @id @default(autoincrement())
+  tareaPlantillaId  Int
+  trabajadorId      Int?
+  estado            EstadoTarea    @default(PENDIENTE)
+  fechaProgramada   DateTime
+  fechaComplecion   DateTime?
+  comentarios       String?
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  tareaPlantilla    TareaPlantilla @relation(fields: [tareaPlantillaId], references: [id_tarea_plantilla])
+  asignado          Trabajador?    @relation("TrabajadorTareas", fields: [trabajadorId], references: [id_trabajador])
 }
 
 enum Area {
-  ADMIN
   CONTA
+  ADMIN
   RRHH
   TRIBUTARIO
 }
@@ -127,4 +103,10 @@ enum FrecuenciaTarea {
   MENSUAL
   SEMANAL
   UNICA
+}
+
+enum TipoRelacion {
+  CLIENTES
+  PROVEEDORES
+  INTERNO
 }
