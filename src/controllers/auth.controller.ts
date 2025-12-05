@@ -1,5 +1,11 @@
 import type { Request, Response } from "express";
-import { Prisma, PrismaClient, Area, FrecuenciaTarea, EstadoTarea } from "@prisma/client";
+import {
+  Prisma,
+  PrismaClient,
+  Area,
+  FrecuenciaTarea,
+  EstadoTarea,
+} from "@prisma/client";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import type { Secret } from "jsonwebtoken";
@@ -8,18 +14,23 @@ import { Readable } from "stream";
 import "dotenv/config";
 import { OAuth2Client } from "google-auth-library";
 import { syncTicketsFromFreshdesk } from "../services/freshdeskService";
-import { generateDriveAuthUrl, getAdminDriveClient, getDriveClientForUser, oauth2Client } from "../services/googleDrive";
+import {
+  generateDriveAuthUrl,
+  getAdminDriveClient,
+  getDriveClientForUser,
+  oauth2Client,
+} from "../services/googleDrive";
 import { resolveFolderPath } from "../services/googleDrivePath";
 import type { drive_v3 } from "googleapis";
 import { listGroupMembersEmails } from "../services/googleDirectoryGroups";
-
+import { isSupervisorOrAdminForTrabajador } from "../lib/roles";
+import type { AuthJwtPayload } from "../middlewares/auth.middleware";
 
 const prisma = new PrismaClient();
 
-
-// =========================
-//   TAREAS ASIGNADAS
-// =========================
+/* =========================
+   TAREAS ASIGNADAS
+========================= */
 
 type FrontTareaEstado = "pendiente" | "completado" | "atrasado";
 
@@ -43,14 +54,13 @@ const MULTI_AREA_USERS: string[] = (process.env.DRIVE_MULTI_AREA_USERS || "")
   .map((e) => e.trim().toLowerCase())
   .filter(Boolean);
 
-
 const GROUP_MAP: Array<{ area: Area; envVar: string }> = [
-  { area: Area.ADMIN,      envVar: "GROUP_ADMIN_EMAIL" },
-  { area: Area.CONTA,      envVar: "GROUP_CONTA_EMAIL" },
-  { area: Area.RRHH,       envVar: "GROUP_RRHH_EMAIL" },
+  { area: Area.ADMIN, envVar: "GROUP_ADMIN_EMAIL" },
+  { area: Area.CONTA, envVar: "GROUP_CONTA_EMAIL" },
+  { area: Area.RRHH, envVar: "GROUP_RRHH_EMAIL" },
   { area: Area.TRIBUTARIO, envVar: "GROUP_TRIBUTARIO_EMAIL" },
 ];
-// justo debajo de GROUP_MAP
+
 const AREA_TO_GROUP_ENV: Record<Area, string> = {
   [Area.ADMIN]: "GROUP_ADMIN_EMAIL",
   [Area.CONTA]: "GROUP_CONTA_EMAIL",
@@ -59,7 +69,9 @@ const AREA_TO_GROUP_ENV: Record<Area, string> = {
 };
 
 // 🔹 Dado un email, mira en qué grupo(s) está y devuelve el Area correspondiente
-async function resolveAreaFromGroupsByEmail(email: string): Promise<Area | null> {
+async function resolveAreaFromGroupsByEmail(
+  email: string
+): Promise<Area | null> {
   const normalized = email.toLowerCase();
 
   for (const { area, envVar } of GROUP_MAP) {
@@ -79,17 +91,15 @@ async function resolveAreaFromGroupsByEmail(email: string): Promise<Area | null>
   return null;
 }
 
-
 async function syncAreasFromGroupsCore(clearOthers: boolean = false) {
   const groupMap: Array<{ area: Area; envVar: string }> = [
-    { area: Area.ADMIN,       envVar: "GROUP_ADMIN_EMAIL" },
-    { area: Area.CONTA,       envVar: "GROUP_CONTA_EMAIL" },
-    { area: Area.RRHH,        envVar: "GROUP_RRHH_EMAIL" },
-    { area: Area.TRIBUTARIO,  envVar: "GROUP_TRIBUTARIO_EMAIL" },
+    { area: Area.ADMIN, envVar: "GROUP_ADMIN_EMAIL" },
+    { area: Area.CONTA, envVar: "GROUP_CONTA_EMAIL" },
+    { area: Area.RRHH, envVar: "GROUP_RRHH_EMAIL" },
+    { area: Area.TRIBUTARIO, envVar: "GROUP_TRIBUTARIO_EMAIL" },
   ];
 
   const emailToArea = new Map<string, Area>();
-  const allEmails: string[] = [];
 
   for (const { area, envVar } of groupMap) {
     const groupEmail = process.env[envVar];
@@ -98,7 +108,6 @@ async function syncAreasFromGroupsCore(clearOthers: boolean = false) {
     const members = await listGroupMembersEmails(groupEmail);
     for (const rawEmail of members) {
       const email = rawEmail.toLowerCase();
-      allEmails.push(email);
 
       if (!emailToArea.has(email)) {
         emailToArea.set(email, area);
@@ -142,7 +151,9 @@ async function syncAreasFromGroupsCore(clearOthers: boolean = false) {
   if (clearOthers) {
     const res = await prisma.trabajador.updateMany({
       where: {
-        areaInterna: { in: [Area.ADMIN, Area.CONTA, Area.RRHH, Area.TRIBUTARIO] },
+        areaInterna: {
+          in: [Area.ADMIN, Area.CONTA, Area.RRHH, Area.TRIBUTARIO],
+        },
         email: { notIn: emails },
       },
       data: { areaInterna: null },
@@ -153,14 +164,13 @@ async function syncAreasFromGroupsCore(clearOthers: boolean = false) {
   return {
     message: "Sync de áreas completado",
     groupsConfigured: groupMap
-      .filter(g => process.env[g.envVar])
-      .map(g => ({ area: g.area, group: process.env[g.envVar] })),
+      .filter((g) => process.env[g.envVar])
+      .map((g) => ({ area: g.area, group: process.env[g.envVar] })),
     emailCount: emailToArea.size,
     updated,
     cleared,
   };
 }
-
 
 /* =========================
    CONFIG / CONSTANTES
@@ -168,14 +178,19 @@ async function syncAreasFromGroupsCore(clearOthers: boolean = false) {
 
 // JWT para Access Token
 const JWT_SECRET: Secret = process.env.JWT_SECRET ?? "dev_secret";
-const ACCESS_EXPIRES_SEC = Number(process.env.JWT_ACCESS_EXPIRES_SECONDS ?? 180 * 60);
+const ACCESS_EXPIRES_SEC = Number(
+  process.env.JWT_ACCESS_EXPIRES_SECONDS ?? 180 * 60
+);
 
 // Refresh Token (cookie)
 const REFRESH_DAYS = Number(process.env.REFRESH_DAYS ?? 7);
-const REFRESH_REMEMBER_DAYS = Number(process.env.REFRESH_REMEMBER_DAYS ?? 60);
+const REFRESH_REMEMBER_DAYS = Number(
+  process.env.REFRESH_REMEMBER_DAYS ?? 60
+);
 
 const COOKIE_SECURE = String(process.env.COOKIE_SECURE ?? "false") === "true";
-const COOKIE_SAMESITE = (process.env.COOKIE_SAMESITE as "lax" | "strict" | "none") ?? "lax";
+const COOKIE_SAMESITE =
+  (process.env.COOKIE_SAMESITE as "lax" | "strict" | "none") ?? "lax";
 const COOKIE_DOMAIN = process.env.COOKIE_DOMAIN || undefined;
 const COOKIE_PATH = process.env.COOKIE_PATH ?? "/api/auth";
 
@@ -183,23 +198,15 @@ const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID ?? "";
 const GOOGLE_ALLOWED_DOMAIN = process.env.GOOGLE_ALLOWED_DOMAIN; // ej: "tuempresa.cl"
 const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
 
-
-/* =========================
-   TIPOS
-========================= */
-type JwtPayload = {
-  id: number;
-  email: string;       // derivado de nivel
-  nombreUsuario: string;
-};
-
-
 /* =========================
    HELPERS
 ========================= */
 
-// Access Token (JWT)
-function signAccessToken(payload: JwtPayload, expiresInSec = ACCESS_EXPIRES_SEC) {
+// Access Token (JWT) – ahora firmando AuthJwtPayload completo
+function signAccessToken(
+  payload: AuthJwtPayload,
+  expiresInSec = ACCESS_EXPIRES_SEC
+) {
   return jwt.sign(payload, JWT_SECRET, { expiresIn: expiresInSec });
 }
 
@@ -247,7 +254,7 @@ function clearRefreshCookie(res: Response) {
 /* =========================
    CONTROLADORES
 ========================= */
-//POST Auth/register
+
 // POST /api/auth/register
 export const registerTrabajador = async (req: Request, res: Response) => {
   try {
@@ -255,14 +262,19 @@ export const registerTrabajador = async (req: Request, res: Response) => {
 
     // Validaciones básicas
     if (!nombre || !email || !password) {
-      return res.status(400).json({ error: "Todos los campos son obligatorios" });
+      return res
+        .status(400)
+        .json({ error: "Todos los campos son obligatorios" });
     }
 
     // Normalizar email
     const emailNorm = String(email).trim().toLowerCase();
 
-    const existing = await prisma.trabajador.findUnique({ where: { email: emailNorm } });
-    if (existing) return res.status(409).json({ error: "Trabajador ya existe" });
+    const existing = await prisma.trabajador.findUnique({
+      where: { email: emailNorm },
+    });
+    if (existing)
+      return res.status(409).json({ error: "Trabajador ya existe" });
 
     // Hash de contraseña con bcrypt
     const passwordHash = await bcrypt.hash(password, 10);
@@ -287,7 +299,6 @@ export const registerTrabajador = async (req: Request, res: Response) => {
     return res.status(500).json({ error: "Error interno" });
   }
 };
-
 
 /* =========================
    GOOGLE LOGIN PARA TRABAJADORES
@@ -322,7 +333,9 @@ export const googleLoginTrabajador = async (req: Request, res: Response) => {
     }
 
     if (!email || !googleId) {
-      return res.status(400).json({ error: "Google no entregó email o id válidos" });
+      return res
+        .status(400)
+        .json({ error: "Google no entregó email o id válidos" });
     }
 
     let trabajador = await prisma.trabajador.findUnique({ where: { email } });
@@ -348,44 +361,45 @@ export const googleLoginTrabajador = async (req: Request, res: Response) => {
       });
     }
 
-    // Intentamos resolver el área por grupos de Google
-const resolvedArea = await resolveAreaFromGroupsByEmail(email);
-
-if (resolvedArea && trabajador.areaInterna !== resolvedArea) {
-  trabajador = await prisma.trabajador.update({
-    where: { id_trabajador: trabajador.id_trabajador },
-    data: { areaInterna: resolvedArea },
-  });
-}
-
-
     if (!trabajador.status) {
       return res.status(403).json({ error: "Trabajador inactivo" });
     }
 
+    // 🔄 Sincronizar área interna desde grupos de Google (una sola vez)
     try {
-      const nuevaArea = await resolveAreaFromGroupsByEmail(email);
-      if (nuevaArea && trabajador.areaInterna !== nuevaArea) {
+      const resolvedArea = await resolveAreaFromGroupsByEmail(email);
+      if (resolvedArea && trabajador.areaInterna !== resolvedArea) {
         trabajador = await prisma.trabajador.update({
           where: { id_trabajador: trabajador.id_trabajador },
-          data: { areaInterna: nuevaArea },
+          data: { areaInterna: resolvedArea },
         });
         console.log(
-          `Área actualizada para ${email}: ${trabajador.areaInterna} -> ${nuevaArea}`
+          `Área actualizada para ${email}: ${trabajador.areaInterna} -> ${resolvedArea}`
         );
       }
     } catch (e) {
-      console.error("Error actualizando areaInterna por grupos en login Google:", e);
+      console.error(
+        "Error actualizando areaInterna por grupos en login Google:",
+        e
+      );
     }
 
-    const jwtPayload: JwtPayload = {
+    // 👇 FLAG de supervisor/Admin calculado desde backend
+    const isSupervisorOrAdmin = isSupervisorOrAdminForTrabajador({
+      email: trabajador.email,
+      areaInterna: trabajador.areaInterna ?? undefined,
+    });
+
+    const jwtPayload: AuthJwtPayload = {
       id: trabajador.id_trabajador,
       email: trabajador.email,
-      nombreUsuario: trabajador.nombre,
+      nombre: trabajador.nombre,
+      isSupervisorOrAdmin,
     };
 
     const accessToken = signAccessToken(jwtPayload);
 
+    // 🔐 Refresh token
     const rtRaw = generateRT();
     const rtHash = hashRT(rtRaw);
     const rememberBool = parseRemember(remember);
@@ -408,10 +422,12 @@ if (resolvedArea && trabajador.areaInterna !== resolvedArea) {
         id: trabajador.id_trabajador,
         nombre: trabajador.nombre,
         email: trabajador.email,
+        areaInterna: trabajador.areaInterna,
+        isSupervisorOrAdmin, // 👈 usable en el front
       },
       accessToken,
-      firstLogin,    // 👈 primera vez con Google
-      hasPassword,   // 👈 ya tiene password propia o no
+      firstLogin, // 👈 primera vez con Google
+      hasPassword, // 👈 ya tiene password propia o no
     });
   } catch (error) {
     console.error("Google login error", error);
@@ -429,7 +445,9 @@ export const loginTrabajador = async (req: Request, res: Response) => {
     };
 
     if (!email || !password) {
-      return res.status(400).json({ error: "Correo y contraseña son obligatorios" });
+      return res
+        .status(400)
+        .json({ error: "Correo y contraseña son obligatorios" });
     }
 
     const emailNorm = email.trim().toLowerCase();
@@ -442,6 +460,7 @@ export const loginTrabajador = async (req: Request, res: Response) => {
         email: true,
         passwordHash: true,
         status: true,
+        areaInterna: true, // 👈 para calcular roles
       },
     });
 
@@ -459,19 +478,28 @@ export const loginTrabajador = async (req: Request, res: Response) => {
       return res.status(401).json({ error: "Credenciales inválidas" });
     }
 
-    // 1) Access Token (corto)
-    const accessToken = signAccessToken({
+    // 👇 FLAG supervisor/admin igual que en Google login
+    const isSupervisorOrAdmin = isSupervisorOrAdminForTrabajador({
+      email: user.email,
+      areaInterna: user.areaInterna ?? undefined,
+    });
+
+    // 1) Access Token (corto) con AuthJwtPayload completo
+    const jwtPayload: AuthJwtPayload = {
       id: user.id_trabajador,
       email: user.email,
-      nombreUsuario: user.nombre,
-    });
+      nombre: user.nombre,
+      isSupervisorOrAdmin,
+    };
+
+    const accessToken = signAccessToken(jwtPayload);
 
     // 2) Refresh Token (cookie httpOnly) + registro en DB
     const rememberFlag = Boolean(remember);
     const days = rememberFlag ? REFRESH_REMEMBER_DAYS : REFRESH_DAYS;
 
-    const rt = generateRT();     // valor que va en cookie
-    const rtHash = hashRT(rt);   // hash que guardamos en BD
+    const rt = generateRT(); // valor que va en cookie
+    const rtHash = hashRT(rt); // hash que guardamos en BD
 
     await prisma.refreshToken.create({
       data: {
@@ -484,12 +512,15 @@ export const loginTrabajador = async (req: Request, res: Response) => {
     // Cookie httpOnly con el refresh token
     setRefreshCookie(res, rt, days);
 
-    // Devolvemos usuario sin passwordHash
+    // Devolvemos usuario sin passwordHash pero con areaInterna e isSupervisorOrAdmin
     const { passwordHash, ...safeUser } = user;
 
     return res.json({
       accessToken,
-      trabajador: safeUser,
+      trabajador: {
+        ...safeUser,
+        isSupervisorOrAdmin,
+      },
       remember: rememberFlag,
     });
   } catch (err) {
@@ -522,6 +553,7 @@ export const logoutTrabajador = async (req: Request, res: Response) => {
     return res.status(500).json({ error: "Error interno" });
   }
 };
+
 export const listTickets = async (req: Request, res: Response) => {
   try {
     const { categoria, estado } = req.query as {
@@ -534,10 +566,7 @@ export const listTickets = async (req: Request, res: Response) => {
 
     const tickets = await prisma.ticket.findMany({
       where,
-      orderBy: [
-        { freshdeskId: "desc" },
-        { createdAt: "desc" },
-      ],
+      orderBy: [{ freshdeskId: "desc" }, { createdAt: "desc" }],
       include: {
         trabajador: {
           select: { id_trabajador: true, nombre: true, email: true },
@@ -545,7 +574,7 @@ export const listTickets = async (req: Request, res: Response) => {
       },
     });
 
-    return res.json({tickets});
+    return res.json({ tickets });
   } catch (err) {
     console.error("listTickets error:", err);
     return res.status(500).json({ error: "Error interno" });
@@ -561,9 +590,9 @@ export const createTicket = async (req: Request, res: Response) => {
     const { subject, description, categoria, prioridad } = req.body;
 
     if (!subject || !description || !categoria) {
-      return res
-        .status(400)
-        .json({ error: "subject, description y categoria son obligatorios" });
+      return res.status(400).json({
+        error: "subject, description y categoria son obligatorios",
+      });
     }
 
     const requesterEmail = req.user?.email ?? "desconocido@cintax.cl";
@@ -609,7 +638,7 @@ export const syncTickets = async (req: Request, res: Response) => {
 
 ==================================
 
-*/ 
+*/
 
 export const connectDrive = (req: Request, res: Response) => {
   if (!req.user) return res.status(401).json({ error: "No autenticado" });
@@ -619,10 +648,8 @@ export const connectDrive = (req: Request, res: Response) => {
   return res.json({ url });
 };
 
-
 export const driveCallback = async (req: Request, res: Response) => {
   try {
-    // ===== DEBUG: logueamos qué está llegando realmente =====
     console.log("driveCallback query:", req.query);
 
     const rawCode = req.query.code;
@@ -640,7 +667,6 @@ export const driveCallback = async (req: Request, res: Response) => {
     const isAdmin = stateStr === "admin";
     const userId = !isAdmin && /^\d+$/.test(stateStr) ? Number(stateStr) : null;
 
-    // Si no es admin y tampoco es un número válido => error
     if (!isAdmin && !userId) {
       return res.status(400).send("state inválido");
     }
@@ -648,40 +674,37 @@ export const driveCallback = async (req: Request, res: Response) => {
     const { tokens } = await oauth2Client.getToken(String(code));
     console.log("driveCallback tokens:", tokens);
 
-    // Puede venir como tokens.refresh_token o dentro de credentials
     const refreshToken =
       tokens.refresh_token || (oauth2Client.credentials as any).refresh_token;
 
     if (!refreshToken) {
-      console.warn("No se recibió refresh_token en callback Drive (state=", stateStr, ")");
+      console.warn(
+        "No se recibió refresh_token en callback Drive (state=",
+        stateStr,
+        ")"
+      );
       return res.status(400).send("No se recibió refresh_token");
     }
 
     if (isAdmin) {
-      // Aquí deberías guardarlo en alguna tabla Config / Settings
       console.log("REFRESH TOKEN ADMIN:", refreshToken);
-
-      // TODO: guarda refreshToken en BD en vez de solo log
+      // TODO: guardar refreshToken admin en BD
       return res.send(
         "Google Drive ADMIN conectado correctamente. Ya puedes cerrar esta pestaña y volver a la intranet."
       );
     }
 
-    // ---- MODO USUARIO (lo que ya tenías) ----
     await prisma.trabajador.update({
       where: { id_trabajador: userId! },
       data: { googleRefreshToken: refreshToken },
     });
 
-    // Redirige al front
     return res.redirect("https://intranet-cintax.netlify.app/drive?connected=1");
   } catch (err) {
     console.error("driveCallback error", err);
     return res.status(500).send("Error conectando Google Drive");
   }
 };
-
-
 
 // src/controllers/auth.controller.ts
 
@@ -690,7 +713,6 @@ export const listCintax2025Folders = async (req: Request, res: Response) => {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: "No autenticado" });
 
-    // 🔹 Usar SIEMPRE el Drive del admin para navegar CINTAX / año
     const drive = getAdminDriveClient();
 
     let yearString = req.params.year as string | undefined;
@@ -736,8 +758,6 @@ export const listCintax2025Folders = async (req: Request, res: Response) => {
   }
 };
 
-
-
 export const listFilesInFolder = async (req: Request, res: Response) => {
   try {
     const userId = req.user?.id;
@@ -745,7 +765,6 @@ export const listFilesInFolder = async (req: Request, res: Response) => {
       return res.status(401).json({ error: "No autenticado" });
     }
 
-    // Traemos al trabajador desde la BD para saber su área
     const trabajador = await prisma.trabajador.findUnique({
       where: { id_trabajador: userId },
       select: { email: true, areaInterna: true },
@@ -756,26 +775,28 @@ export const listFilesInFolder = async (req: Request, res: Response) => {
     }
 
     const userEmail = trabajador.email.toLowerCase();
-const userDomain = userEmail.split("@")[1] ?? "";
-const userArea = trabajador.areaInterna ?? null;
+    const userDomain = userEmail.split("@")[1] ?? "";
+    const userArea = trabajador.areaInterna ?? null;
 
-const folderId = req.params.id;
-if (!folderId) {
-  return res.status(400).json({ error: "Falta folderId" });
-}
+    const folderId = req.params.id;
+    if (!folderId) {
+      return res.status(400).json({ error: "Falta folderId" });
+    }
 
-const drive = getAdminDriveClient();
+    const drive = getAdminDriveClient();
 
-// 👇 ahora cualquier trabajador con areaInterna ADMIN es admin de la app
-const isAdminUser =
-  trabajador.areaInterna === Area.ADMIN ||
-  (GOOGLE_DRIVE_ADMIN_EMAIL !== undefined &&
-   userEmail === GOOGLE_DRIVE_ADMIN_EMAIL);
+    const GOOGLE_DRIVE_ADMIN_EMAIL =
+      process.env.GOOGLE_DRIVE_ADMIN_EMAIL?.toLowerCase();
+
+    const isAdminUser =
+      trabajador.areaInterna === Area.ADMIN ||
+      (GOOGLE_DRIVE_ADMIN_EMAIL !== undefined &&
+        userEmail === GOOGLE_DRIVE_ADMIN_EMAIL);
 
     const pageSize = Number(req.query.pageSize ?? 10);
-    const pageToken = (req.query.pageToken as string | undefined) || undefined;
+    const pageToken =
+      (req.query.pageToken as string | undefined) || undefined;
 
-    // 1) Listamos TODO el contenido de la carpeta como ADMIN
     const resp = await drive.files.list({
       q: `'${folderId}' in parents and trashed = false`,
       fields:
@@ -788,7 +809,6 @@ const isAdminUser =
     const allFiles = resp.data.files ?? [];
     const apiNextToken = resp.data.nextPageToken ?? null;
 
-    // ⚡ ADMIN: ve todo directamente
     if (isAdminUser) {
       return res.json({
         files: allFiles,
@@ -796,14 +816,10 @@ const isAdminUser =
       });
     }
 
-    // ==== USUARIO NORMAL: filtramos por permisos ====
-
-
-const groupEnvVar = userArea ? AREA_TO_GROUP_ENV[userArea] : undefined;
-const groupForUser = groupEnvVar
-  ? process.env[groupEnvVar]?.toLowerCase() ?? null
-  : null;
-
+    const groupEnvVar = userArea ? AREA_TO_GROUP_ENV[userArea] : undefined;
+    const groupForUser = groupEnvVar
+      ? process.env[groupEnvVar]?.toLowerCase() ?? null
+      : null;
 
     const visibles: typeof allFiles = [];
 
@@ -821,19 +837,15 @@ const groupForUser = groupEnvVar
         const hasAccess = perms.some((p) => {
           const pEmail = p.emailAddress?.toLowerCase();
 
-          // 1) permiso directo al usuario
           if (p.type === "user" && pEmail === userEmail) {
             return true;
           }
 
-          // 2) permiso al grupo del área (conta@, rrhh@, etc.)
           if (p.type === "group" && groupForUser && pEmail === groupForUser) {
             return true;
           }
 
-          // 3) OPCIONAL: si compartes por dominio completo (Ej: "cintax.cl")
-          //    descomenta esto SOLO si quieres que cualquiera del dominio vea todo:
-          //
+          // Opcional: compartido a dominio
           // if (p.type === "domain" && p.domain?.toLowerCase() === userDomain) {
           //   return true;
           // }
@@ -845,11 +857,14 @@ const groupForUser = groupEnvVar
           visibles.push(file);
         }
       } catch (permErr) {
-        console.error("Error leyendo permisos de archivo", file.id, permErr);
+        console.error(
+          "Error leyendo permisos de archivo",
+          file.id,
+          permErr
+        );
       }
     }
 
-    // Si no hay visibles, igual devolvemos lista vacía y sin nextPageToken
     return res.json({
       files: visibles,
       nextPageToken: visibles.length > 0 ? apiNextToken : null,
@@ -859,8 +874,6 @@ const groupForUser = groupEnvVar
     return res.status(500).json({ error: "Error listando archivos" });
   }
 };
-
-
 
 export const uploadToFolder = async (req: Request, res: Response) => {
   try {
@@ -874,7 +887,6 @@ export const uploadToFolder = async (req: Request, res: Response) => {
       return res.status(400).json({ error: "No se recibió archivo" });
     }
 
-    // ✅ también usamos la cuenta ADMIN
     const drive = getAdminDriveClient();
 
     const stream = Readable.from(file.buffer);
@@ -888,13 +900,16 @@ export const uploadToFolder = async (req: Request, res: Response) => {
         mimeType: file.mimetype,
         body: stream,
       },
-      fields: "id, name, mimeType, webViewLink, iconLink, modifiedTime, size",
+      fields:
+        "id, name, mimeType, webViewLink, iconLink, modifiedTime, size",
     });
 
     return res.status(201).json({ file: resp.data });
   } catch (err) {
     console.error("uploadToFolder error:", err);
-    return res.status(500).json({ error: "Error subiendo archivo a Drive" });
+    return res
+      .status(500)
+      .json({ error: "Error subiendo archivo a Drive" });
   }
 };
 
@@ -923,7 +938,6 @@ export const listMySharedFolders = async (req: Request, res: Response) => {
 
     const drive = getAdminDriveClient();
 
-    // Año por URL o año actual
     let yearString = req.params.year as string | undefined;
     if (!yearString) {
       yearString = new Date().getFullYear().toString();
@@ -932,7 +946,6 @@ export const listMySharedFolders = async (req: Request, res: Response) => {
     const basePath = ["CINTAX", yearString];
     const yearFolderId = await resolveFolderPath(drive, basePath);
 
-    // 1) Listar CATEGORÍAS dentro de ese año (CONTA, RRHH, TRIBUTARIO, etc.)
     const categoriasRes = await drive.files.list({
       q: `'${yearFolderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
       fields: "files(id, name, mimeType, modifiedTime)",
@@ -941,7 +954,6 @@ export const listMySharedFolders = async (req: Request, res: Response) => {
 
     const categorias = categoriasRes.data.files ?? [];
 
-    // 2) Buscar el trabajador para conocer su áreaInterna
     const trabajador = await prisma.trabajador.findUnique({
       where: { id_trabajador: req.user!.id },
       select: { email: true, areaInterna: true },
@@ -949,15 +961,11 @@ export const listMySharedFolders = async (req: Request, res: Response) => {
 
     const visibleFolders: VisibleFolder[] = [];
 
-    // 🔹 ADMIN de la app:
-    //    - si el trabajador tiene areaInterna = ADMIN
-    //    - o si su email coincide con GOOGLE_DRIVE_ADMIN_EMAIL
     const isAdminUser =
       trabajador?.areaInterna === Area.ADMIN ||
       (GOOGLE_DRIVE_ADMIN_EMAIL !== undefined &&
         userEmail === GOOGLE_DRIVE_ADMIN_EMAIL);
 
-    // 🔹 ADMIN: ve todas las categorías tal cual
     if (isAdminUser) {
       for (const categoria of categorias) {
         if (!categoria.id) continue;
@@ -981,7 +989,6 @@ export const listMySharedFolders = async (req: Request, res: Response) => {
       });
     }
 
-    // 🔹 Usuario normal: si no tiene áreaInterna, no mostramos nada
     if (!trabajador?.areaInterna) {
       return res.json({
         year: yearString,
@@ -990,29 +997,22 @@ export const listMySharedFolders = async (req: Request, res: Response) => {
       });
     }
 
-    // Nombre de la categoría que esperamos (CONTA, RRHH, TRIBUTARIO...)
     const expectedName = trabajador.areaInterna.toString().toUpperCase();
 
-    // Grupo del área (conta@..., rrhh@..., etc.)
     const groupEnvVar = AREA_TO_GROUP_ENV[trabajador.areaInterna];
     const groupForUser = groupEnvVar
       ? process.env[groupEnvVar]?.toLowerCase() ?? null
       : null;
 
-    // 3) Recorremos categorías y dejamos SOLO la del área del usuario
     for (const categoria of categorias) {
       if (!categoria.id) continue;
 
       const categoriaName = (categoria.name ?? "").toUpperCase();
-      if (categoriaName !== expectedName) {
-        // no es el área del usuario
-        continue;
-      }
+      if (categoriaName !== expectedName) continue;
 
       const catPathNames = ["CINTAX", yearString, categoria.name ?? ""];
       const catPathString = catPathNames.join(" / ");
 
-      // 4) Miramos subcarpetas de esta categoría (A01, PERFOROCK, etc.)
       const subRes = await drive.files.list({
         q: `'${categoria.id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
         fields: "files(id, name, mimeType, modifiedTime)",
@@ -1036,10 +1036,8 @@ export const listMySharedFolders = async (req: Request, res: Response) => {
           const hasAccess = perms.some((p) => {
             const pEmail = p.emailAddress?.toLowerCase();
 
-            // 1) permiso directo al usuario
             if (p.type === "user" && pEmail === userEmail) return true;
 
-            // 2) permiso al grupo del área (conta@, rrhh@, etc.)
             if (p.type === "group" && groupForUser && pEmail === groupForUser) {
               return true;
             }
@@ -1049,14 +1047,17 @@ export const listMySharedFolders = async (req: Request, res: Response) => {
 
           if (hasAccess) {
             userHasSomething = true;
-            break; // ya sabemos que esta categoría le sirve al usuario
+            break;
           }
         } catch (permErr) {
-          console.error("Error leyendo permisos de carpeta", folder.id, permErr);
+          console.error(
+            "Error leyendo permisos de carpeta",
+            folder.id,
+            permErr
+          );
         }
       }
 
-      // Si NO tiene ninguna subcarpeta con acceso, NO mostramos la categoría
       if (!userHasSomething) {
         continue;
       }
@@ -1084,7 +1085,6 @@ export const listMySharedFolders = async (req: Request, res: Response) => {
   }
 };
 
-
 export const listMyRutFolders = async (req: Request, res: Response) => {
   try {
     const userEmail = req.user?.email?.toLowerCase();
@@ -1094,7 +1094,6 @@ export const listMyRutFolders = async (req: Request, res: Response) => {
 
     const drive = getAdminDriveClient();
 
-    // Año por URL o año actual
     let yearString = req.params.year as string | undefined;
     if (!yearString) {
       yearString = new Date().getFullYear().toString();
@@ -1103,7 +1102,6 @@ export const listMyRutFolders = async (req: Request, res: Response) => {
     const basePath = ["CINTAX", yearString];
     const yearFolderId = await resolveFolderPath(drive, basePath);
 
-    // 1) Listar CATEGORÍAS dentro de ese año (CONTA, RRHH, TRIBUTARIO, etc.)
     const categoriasRes = await drive.files.list({
       q: `'${yearFolderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
       fields: "files(id, name, mimeType, modifiedTime)",
@@ -1112,7 +1110,6 @@ export const listMyRutFolders = async (req: Request, res: Response) => {
 
     const categorias = categoriasRes.data.files ?? [];
 
-    // 2) Buscar el trabajador para conocer su áreaInterna
     const trabajador = await prisma.trabajador.findUnique({
       where: { id_trabajador: req.user!.id },
       select: { email: true, areaInterna: true },
@@ -1132,13 +1129,10 @@ export const listMyRutFolders = async (req: Request, res: Response) => {
       (GOOGLE_DRIVE_ADMIN_EMAIL !== undefined &&
         userEmail === GOOGLE_DRIVE_ADMIN_EMAIL?.toLowerCase());
 
-    // 👇 usuarios que deben partir desde CATEGORÍAS
     const isMultiAreaUser = MULTI_AREA_USERS.includes(userEmail);
 
     const shouldStartAtCategorias = isAdminUser || isMultiAreaUser;
 
-    // 🔹 CASO 1: usuarios multi-área (admin / supervisores)
-    // → devolvemos SOLO categorías como "folders"
     if (shouldStartAtCategorias) {
       for (const categoria of categorias) {
         if (!categoria.id) continue;
@@ -1149,7 +1143,7 @@ export const listMyRutFolders = async (req: Request, res: Response) => {
         visibleRutFolders.push({
           id: categoria.id,
           name: categoriaName,
-          categoria: null, // 👈 importante para que el breadcrumb no repita
+          categoria: null,
           modifiedTime: categoria.modifiedTime ?? null,
           pathNames,
           pathString: pathNames.join(" / "),
@@ -1163,8 +1157,6 @@ export const listMyRutFolders = async (req: Request, res: Response) => {
         folders: visibleRutFolders,
       });
     }
-
-    // 🔹 CASO 2: usuario normal de un área → devolvemos carpetas de RUT
 
     const groupEnvVar = trabajador?.areaInterna
       ? AREA_TO_GROUP_ENV[trabajador.areaInterna]
@@ -1180,7 +1172,6 @@ export const listMyRutFolders = async (req: Request, res: Response) => {
       const categoriaName = categoria.name ?? "";
       const catPathNames = ["CINTAX", yearString, categoriaName];
 
-      // 3) Listar subcarpetas (clientes/RUT) dentro de la categoría
       const subRes = await drive.files.list({
         q: `'${categoria.id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
         fields: "files(id, name, mimeType, modifiedTime)",
@@ -1192,7 +1183,6 @@ export const listMyRutFolders = async (req: Request, res: Response) => {
       for (const folder of subFolders) {
         if (!folder.id) continue;
 
-        // ADMIN (pero NO multi-área adicional) ve todo
         if (isAdminUser && !isMultiAreaUser) {
           const pathNames = [...catPathNames, folder.name ?? ""];
           visibleRutFolders.push({
@@ -1206,7 +1196,6 @@ export const listMyRutFolders = async (req: Request, res: Response) => {
           continue;
         }
 
-        // Usuario normal → verificar permisos sobre esa subcarpeta
         try {
           const permResp = await drive.permissions.list({
             fileId: folder.id,
@@ -1218,10 +1207,8 @@ export const listMyRutFolders = async (req: Request, res: Response) => {
           const hasAccess = perms.some((p) => {
             const pEmail = p.emailAddress?.toLowerCase();
 
-            // permiso directo al usuario
             if (p.type === "user" && pEmail === userEmail) return true;
 
-            // permiso al grupo del área (conta@, rrhh@, etc.)
             if (p.type === "group" && groupForUser && pEmail === groupForUser) {
               return true;
             }
@@ -1264,8 +1251,6 @@ export const listMyRutFolders = async (req: Request, res: Response) => {
   }
 };
 
-
-
 export const syncAreasFromGroups = async (req: Request, res: Response) => {
   try {
     const { clearOthers } = req.body as { clearOthers?: boolean };
@@ -1273,25 +1258,27 @@ export const syncAreasFromGroups = async (req: Request, res: Response) => {
     return res.json(result);
   } catch (err) {
     console.error("syncAreasFromGroups error:", err);
-    return res.status(500).json({ error: "Error sincronizando áreas desde grupos" });
+    return res
+      .status(500)
+      .json({ error: "Error sincronizando áreas desde grupos" });
   }
 };
 
 // 👇 exportamos la función core para usarla en el cron
 export { syncAreasFromGroupsCore };
 
+/* =========================
+   TAREAS AUTOMÁTICAS
+========================= */
 
-// util: primer día del mes
 function startOfMonth(date: Date): Date {
   return new Date(date.getFullYear(), date.getMonth(), 1, 0, 0, 0, 0);
 }
 
-// util: primer día del mes siguiente
 function startOfNextMonth(date: Date): Date {
   return new Date(date.getFullYear(), date.getMonth() + 1, 1, 0, 0, 0, 0);
 }
 
-// util: lunes de la semana de `date` (asumiendo lunes=1)
 function startOfWeek(date: Date): Date {
   const d = new Date(date);
   const day = d.getDay() || 7; // domingo=0 → 7
@@ -1300,14 +1287,12 @@ function startOfWeek(date: Date): Date {
   return d;
 }
 
-// util: lunes de la semana siguiente
 function startOfNextWeek(date: Date): Date {
   const start = startOfWeek(date);
   start.setDate(start.getDate() + 7);
   return start;
 }
 
-// calcula próxima fecha de vencimiento según plantilla
 function getNextDueDate(
   tpl: {
     frecuencia: FrecuenciaTarea;
@@ -1331,7 +1316,6 @@ function getNextDueDate(
     if (thisMonthDue >= today) {
       return thisMonthDue;
     }
-    // si ya pasó, siguiente mes
     return new Date(
       today.getFullYear(),
       today.getMonth() + 1,
@@ -1344,33 +1328,32 @@ function getNextDueDate(
   }
 
   if (tpl.frecuencia === FrecuenciaTarea.SEMANAL && tpl.diaSemanaVencimiento) {
-    const targetDow = tpl.diaSemanaVencimiento; // 1-7 (ej: viernes=5)
+    const targetDow = tpl.diaSemanaVencimiento;
     const base = new Date(today);
     base.setHours(9, 0, 0, 0);
 
-    const todayDow = base.getDay() || 7; // 1-7
+    const todayDow = base.getDay() || 7;
 
     const diff = targetDow - todayDow;
     if (diff >= 0) {
       base.setDate(base.getDate() + diff);
       return base;
     } else {
-      // semana siguiente
       base.setDate(base.getDate() + 7 + diff);
       return base;
     }
   }
 
   if (tpl.frecuencia === FrecuenciaTarea.UNICA) {
-    // si quieres manejar una fecha fija, se podría agregar otro campo en TareaPlantilla.
     return null;
   }
 
   return null;
 }
 
-export async function generarTareasAutomaticas(fechaReferencia: Date = new Date()) {
-  // 1) traer plantillas activas con los campos que necesitamos
+export async function generarTareasAutomaticas(
+  fechaReferencia: Date = new Date()
+) {
   const plantillas = await prisma.tareaPlantilla.findMany({
     where: { activo: true },
     select: {
@@ -1384,7 +1367,6 @@ export async function generarTareasAutomaticas(fechaReferencia: Date = new Date(
     },
   });
 
-  // 2) Agrupar trabajadores activos por áreaInterna
   const workersByArea: Record<Area, { id_trabajador: number }[]> = {
     [Area.ADMIN]: [],
     [Area.CONTA]: [],
@@ -1402,7 +1384,6 @@ export async function generarTareasAutomaticas(fechaReferencia: Date = new Date(
     workersByArea[w.areaInterna].push({ id_trabajador: w.id_trabajador });
   }
 
-  // 3) índices para round-robin por área
   const areaIndex: Partial<Record<Area, number>> = {
     [Area.ADMIN]: 0,
     [Area.CONTA]: 0,
@@ -1410,7 +1391,6 @@ export async function generarTareasAutomaticas(fechaReferencia: Date = new Date(
     [Area.TRIBUTARIO]: 0,
   };
 
-  // 4) Recorrer plantillas
   for (const tpl of plantillas) {
     const dueDate = getNextDueDate(
       {
@@ -1422,7 +1402,6 @@ export async function generarTareasAutomaticas(fechaReferencia: Date = new Date(
     );
     if (!dueDate) continue;
 
-    // 5) Evitar duplicar: ver si ya existe una tarea para esta plantilla
     let startPeriod: Date;
     let endPeriod: Date;
 
@@ -1433,7 +1412,6 @@ export async function generarTareasAutomaticas(fechaReferencia: Date = new Date(
       startPeriod = startOfWeek(dueDate);
       endPeriod = startOfNextWeek(dueDate);
     } else {
-      // UNICA u otra → rango gigante, si ya hay una, no crear más
       startPeriod = new Date(2000, 0, 1);
       endPeriod = new Date(2100, 0, 1);
     }
@@ -1450,7 +1428,6 @@ export async function generarTareasAutomaticas(fechaReferencia: Date = new Date(
 
     if (yaExiste) continue;
 
-    // 6) Decidir a quién asignar
     let trabajadorId: number | null = null;
 
     if (tpl.responsableDefaultId) {
@@ -1462,7 +1439,6 @@ export async function generarTareasAutomaticas(fechaReferencia: Date = new Date(
       areaIndex[tpl.area] = idx + 1;
     }
 
-    // 7) Crear la tarea
     await prisma.tareaAsignada.create({
       data: {
         tareaPlantillaId: tpl.id_tarea_plantilla,
@@ -1473,7 +1449,9 @@ export async function generarTareasAutomaticas(fechaReferencia: Date = new Date(
     });
 
     console.log(
-      `Creada tarea para plantilla ${tpl.nombre} (${tpl.id_tarea_plantilla}) con fecha ${dueDate
+      `Creada tarea para plantilla ${
+        tpl.nombre
+      } (${tpl.id_tarea_plantilla}) con fecha ${dueDate
         .toISOString()
         .slice(0, 10)} asignada a ${
         trabajadorId ? `trabajador ${trabajadorId}` : "SIN asignar"
@@ -1483,9 +1461,6 @@ export async function generarTareasAutomaticas(fechaReferencia: Date = new Date(
 }
 
 // GET /api/tareas-asignadas
-// query:
-//   soloPendientes=true/false
-//   todos=true/false  (solo admin ve todos)
 export const listTareasAsignadas = async (req: Request, res: Response) => {
   try {
     const userId = req.user?.id as number | undefined;
@@ -1500,7 +1475,6 @@ export const listTareasAsignadas = async (req: Request, res: Response) => {
 
     const onlyPending = soloPendientes === "true";
 
-    // Vemos si el usuario actual puede ver "todos"
     const trabajadorActual = await prisma.trabajador.findUnique({
       where: { id_trabajador: userId },
       select: { email: true, areaInterna: true },
@@ -1510,21 +1484,18 @@ export const listTareasAsignadas = async (req: Request, res: Response) => {
       process.env.APP_SUPERADMIN_EMAIL?.toLowerCase() ?? "";
 
     const isAppAdmin =
-      (trabajadorActual?.areaInterna === Area.ADMIN) ||
-      (trabajadorActual?.email.toLowerCase() === appSuperAdminEmail);
+      trabajadorActual?.areaInterna === Area.ADMIN ||
+      trabajadorActual?.email.toLowerCase() === appSuperAdminEmail;
 
-    // Si viene ?todos=true y el usuario ES admin → vemos todas las tareas
     const verTodos = todos === "true" && isAppAdmin;
 
     const whereTarea: Prisma.TareaAsignadaWhereInput = {};
 
     if (!verTodos) {
-      // solo tareas del trabajador logueado
       whereTarea.trabajadorId = userId;
     }
 
     if (onlyPending) {
-      // pendientes / en proceso
       whereTarea.estado = {
         in: [EstadoTarea.PENDIENTE, EstadoTarea.EN_PROCESO],
       };
@@ -1547,7 +1518,6 @@ export const listTareasAsignadas = async (req: Request, res: Response) => {
       },
     });
 
-    // Agrupar por trabajador (asignado)
     type WorkerBucket = {
       id_trabajador: number;
       nombre: string;
@@ -1564,7 +1534,7 @@ export const listTareasAsignadas = async (req: Request, res: Response) => {
     const byWorker = new Map<number, WorkerBucket>();
 
     for (const ta of tareas) {
-      if (!ta.asignado) continue; // tareas sin asignar → las puedes manejar aparte si quieres
+      if (!ta.asignado) continue;
 
       const wId = ta.asignado.id_trabajador;
       if (!byWorker.has(wId)) {
@@ -1589,13 +1559,12 @@ export const listTareasAsignadas = async (req: Request, res: Response) => {
       });
     }
 
-    // Mapear al formato que usa tu front (Analista / Cliente / Tarea)
     const analistas = Array.from(byWorker.values()).map((w) => {
       const total = w.tareas.length;
-      const completadas = w.tareas.filter((t) => t.estado === "completado")
-        .length;
-      const progreso =
-        total > 0 ? Math.round((completadas / total) * 100) : 0;
+      const completadas = w.tareas.filter(
+        (t) => t.estado === "completado"
+      ).length;
+      const progreso = total > 0 ? Math.round((completadas / total) * 100) : 0;
 
       return {
         id: `a-${w.id_trabajador}`,

@@ -7,5 +7,5 @@
     "strict": true,
     "esModuleInterop": true
   },
-  "include": ["src"]
+  "include": ["src", "prisma/seed-tareas-contra-a01.ts"]
 }

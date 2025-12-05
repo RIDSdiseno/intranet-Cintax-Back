@@ -23,6 +23,9 @@ model Trabajador {
   tareasAsignadas    TareaAsignada[]  @relation("TrabajadorTareas")
   tareasDefault      TareaPlantilla[] @relation("TareaResponsableDefault")
   tickets            Ticket[]
+
+  /// Código de carpeta en Drive dentro del área (ej: "A01", "A02")
+  carpetaDriveCodigo String?          @db.VarChar(50)
 }
 
 model RefreshToken {
@@ -62,8 +65,13 @@ model TareaPlantilla {
   presentacion         Presentacion
   activo               Boolean         @default(true)
   responsableDefaultId Int?
+  /// Código corto del documento/tarea (ej: "F29", "F50", etc.)
+  codigoDocumento      String?
   tareasAsignadas      TareaAsignada[]
   responsableDefault   Trabajador?     @relation("TareaResponsableDefault", fields: [responsableDefaultId], references: [id_trabajador])
+
+  @@index([area])
+  @@index([responsableDefaultId])
 }
 
 model TareaAsignada {
@@ -76,8 +84,33 @@ model TareaAsignada {
   comentarios       String?
   createdAt         DateTime       @default(now())
   updatedAt         DateTime       @updatedAt
+  /// RUT del cliente al que aplica esta tarea (ej: "76.123.456-7")
+  rutCliente        String?
   tareaPlantilla    TareaPlantilla @relation(fields: [tareaPlantillaId], references: [id_tarea_plantilla])
   asignado          Trabajador?    @relation("TrabajadorTareas", fields: [trabajadorId], references: [id_trabajador])
+
+  /// Carpeta "TAREA" en Drive para esta tarea (CINTAX/YEAR/CONTA/A0X/RUT/MES/NOMBRE/TAREA)
+  driveTareaFolderId String?       @db.VarChar(255)
+
+  @@index([trabajadorId])
+  @@index([rutCliente])
+  @@index([tareaPlantillaId])
+}
+
+/// CLIENTES, con RUT y razón social, ligados a un ejecutivo (A01, etc.)
+model Cliente {
+  id            Int      @id @default(autoincrement())
+  rut           String   @unique
+  razonSocial   String
+  alias         String?
+  activo        Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  agenteId      Int?
+  codigoCartera String?
+
+  @@index([agenteId])
+  @@index([codigoCartera])
 }
 
 enum TipoRelacion {

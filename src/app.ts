@@ -3,8 +3,8 @@ import express from "express";
 import cors from "cors";
 import morgan from "morgan";
 import cookieParser from "cookie-parser";
-import routes from "./routes.js";                            // Rutas principales existentes
-import trabajadorRoutes from "./routes/trabajador.routes";   // NUEVAS rutas de trabajadores
+import routes from "./routes.js";
+import trabajadorRoutes from "./routes/trabajador.routes";
 import { errorHandler } from "./middlewares/error.middleware.js";
 import "dotenv/config";
 
@@ -19,36 +19,34 @@ const ENABLE_TASK_CRON = process.env.ENABLE_TASK_CRON === "true";
 const ENABLE_GROUPS_CRON = process.env.ENABLE_GROUPS_CRON === "true";
 
 // =============================
-//  MIDDLEWARES
+//  CORS CONFIG
 // =============================
-app.use(cors({
+const corsOptions: cors.CorsOptions = {
   origin: [
     "https://intranet-cintax.netlify.app",
     "http://localhost:5173",
   ],
-  methods: ["GET", "POST", "PUT", "DELETE"],
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"], // 👈 incluye PATCH
   credentials: true,
-  allowedHeaders: ["Content-Type", "Authorization"]
-}));
+  allowedHeaders: ["Content-Type", "Authorization"],
+  optionsSuccessStatus: 204,
+};
 
-app.use(cookieParser()); 
+// ✅ CORS global (sin app.options)
+app.use(cors(corsOptions));
+
+// =============================
+//  MIDDLEWARES
+// =============================
+app.use(cookieParser());
 app.use(express.json());
 app.use(morgan("dev"));
-
 
 // =============================
 //  RUTAS PRINCIPALES API
 // =============================
-
-// Tus rutas antiguas (login, tareas, freshdesk, etc)
-// Se sirve bajo /api
 app.use("/api", routes);
-
-// NUEVAS rutas de trabajadores
-// Ejemplo final:
-/// GET http://localhost:3000/api/trabajadores
 app.use("/api", trabajadorRoutes);
-
 
 // =============================
 //  DEBUG ENDPOINTS (Opcionales)
@@ -56,7 +54,6 @@ app.use("/api", trabajadorRoutes);
 app.get("/debug/cookies", (req, res) =>
   res.json({ cookies: (req as any).cookies })
 );
-
 
 // =============================
 //  GOOGLE DRIVE CONNECTOR
@@ -71,7 +68,6 @@ app.get("/admin/drive/auth-url", (_req, res) => {
   res.send(`<a href="${url}">Conectar admin Cintax</a>`);
 });
 
-
 // =============================
 //  ENDPOINT MANUAL (TEMPORAL)
 // =============================
@@ -85,12 +81,10 @@ app.post("/api/tareas/generar", async (_req, res) => {
   }
 });
 
-
 // =============================
 //  MANEJADOR GLOBAL DE ERRORES
 // =============================
 app.use(errorHandler);
-
 
 // =============================
 //  CRON JOBS
