@@ -2,10 +2,18 @@
   "compilerOptions": {
     "target": "ES2020",
     "module": "commonjs",
+    "rootDir": ".",           // 👈 antes seguro estaba "./src"
     "outDir": "./dist",
-    "rootDir": "./src",
     "strict": true,
-    "esModuleInterop": true
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
   },
-  "include": ["src", "prisma/seed-tareas-contra-a01.ts"]
+  "include": [
+    "src/**/*.ts",
+    "prisma/**/*.ts"          // 👈 incluye todos los ts de prisma si quieres
+  ],
+  "exclude": [
+    "node_modules"
+  ]
 }
