@@ -1,7 +1,7 @@
 import { Router } from "express";
-import authRoutes from "./routes/auth.route.js";
-import googleRoutes from "./routes/google.route.js";
-import tareasRoutes from "./routes/tareas.route.js";
+import authRoutes from "./routes/auth.route";
+import googleRoutes from "./routes/google.route";
+import tareasRoutes from "./routes/tareas.route";
 
 const router = Router();
 
