@@ -9,18 +9,15 @@ export interface AuthJwtPayload {
   // agrega aquí lo que realmente lleve tu token (rol, etc.)
 }
 
-declare global {
-  namespace Express {
-    interface Request {
-      user?: AuthJwtPayload;
-    }
-  }
+// Request extendida SOLO para este middleware / controladores que la usen
+export interface AuthRequest extends Request {
+  user?: AuthJwtPayload;
 }
 
 const JWT_SECRET = process.env.JWT_SECRET || "cambiar_esto_en_prod";
 
 export const requireAuth = (
-  req: Request,
+  req: AuthRequest,
   res: Response,
   next: NextFunction
 ) => {
@@ -35,6 +32,7 @@ export const requireAuth = (
 
     const decoded = jwt.verify(token, JWT_SECRET) as AuthJwtPayload;
 
+    // ahora TS sabe que req tiene user porque usamos AuthRequest
     req.user = decoded;
 
     next();
