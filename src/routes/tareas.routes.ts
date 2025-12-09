@@ -1,6 +1,16 @@
 // src/routes/tareas.routes.ts
 import { Router } from "express";
-import { TareasController } from "../controllers/tareas.Controller"; // 👈 respeta el nombre real del archivo
+import {
+  getMisRuts,
+  getTareasPorRut,
+  getPlantillas,
+  getTareasPorPlantilla,
+  crearTareasDesdePlantilla,
+  actualizarEstado,
+  getResumenSupervision,
+  ensureDriveFolder,
+  subirArchivo,
+} from "../controllers/tareas.Controller"; // 👈 ahora importamos funciones
 import { requireAuth } from "../middlewares/requireAuth";
 import multer from "multer";
 
@@ -12,30 +22,30 @@ const upload = multer();
 // =============================
 
 // GET /api/tareas/mis-ruts
-router.get("/mis-ruts", requireAuth, TareasController.getMisRuts);
+router.get("/mis-ruts", requireAuth, getMisRuts);
 
 // GET /api/tareas/por-rut/:rut
-router.get("/por-rut/:rut", requireAuth, TareasController.getTareasPorRut);
+router.get("/por-rut/:rut", requireAuth, getTareasPorRut);
 
 // GET /api/tareas/plantillas
-router.get("/plantillas", requireAuth, TareasController.getPlantillas);
+router.get("/plantillas", requireAuth, getPlantillas);
 
 // GET /api/tareas/por-plantilla/:idPlantilla
 router.get(
   "/por-plantilla/:idPlantilla",
   requireAuth,
-  TareasController.getTareasPorPlantilla
+  getTareasPorPlantilla
 );
 
 // POST /api/tareas/bulk-desde-plantilla
 router.post(
   "/bulk-desde-plantilla",
   requireAuth,
-  TareasController.crearTareasDesdePlantilla
+  crearTareasDesdePlantilla
 );
 
 // PATCH /api/tareas/:id/estado
-router.patch("/:id/estado", requireAuth, TareasController.actualizarEstado);
+router.patch("/:id/estado", requireAuth, actualizarEstado);
 
 // =============================
 //  VISTA SUPERVISIÓN / ADMIN
@@ -45,7 +55,7 @@ router.patch("/:id/estado", requireAuth, TareasController.actualizarEstado);
 router.get(
   "/supervision/resumen",
   requireAuth,
-  TareasController.getResumenSupervision
+  getResumenSupervision
 );
 
 // =============================
@@ -56,7 +66,7 @@ router.get(
 router.post(
   "/:id/ensure-drive-folder",
   requireAuth,
-  TareasController.ensureDriveFolder
+  ensureDriveFolder
 );
 
 // POST /api/tareas/:id/archivos  (subida de archivo único)
@@ -64,7 +74,7 @@ router.post(
   "/:id/archivos",
   requireAuth,
   upload.single("archivo"), // campo "archivo" en el form-data
-  TareasController.subirArchivo
+  subirArchivo
 );
 
 export default router;

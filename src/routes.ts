@@ -1,17 +1,12 @@
 // src/routes.ts
 import { Router } from "express";
 
-// Rutas existentes
+// Rutas hijas
 import authRoutes from "./routes/auth.route";
 import googleRoutes from "./routes/google.route";
-
-// 👇 Importamos la clase del controller (OJO: nombre de archivo en minúscula)
-import { TareasController } from "./controllers/tareas.Controller";
-import { requireAuth } from "./middlewares/requireAuth";
-import multer from "multer";
+import tareasRoutes from "./routes/tareas.routes"; // 👈 aquí se montan TODAS las rutas de tareas
 
 const router = Router();
-const upload = multer();
 
 // =============================
 //  HEALTHCHECK
@@ -31,66 +26,10 @@ router.use("/auth", authRoutes);
 router.use("/drive", googleRoutes);
 
 // =============================
-//  TAREAS – RUTAS UNA POR UNA
-//  TODAS CUELGAN DE /api/tareas/...
+//  TAREAS
+//  → todo lo que esté en src/routes/tareas.routes.ts
+//     queda bajo /api/tareas/...
 // =============================
-
-// VISTA EJECUTIVO
-router.get(
-  "/tareas/mis-ruts",
-  requireAuth,
-  TareasController.getMisRuts
-);
-
-router.get(
-  "/tareas/por-rut/:rut",
-  requireAuth,
-  TareasController.getTareasPorRut
-);
-
-router.get(
-  "/tareas/plantillas",
-  requireAuth,
-  TareasController.getPlantillas
-);
-
-router.get(
-  "/tareas/por-plantilla/:idPlantilla",
-  requireAuth,
-  TareasController.getTareasPorPlantilla
-);
-
-router.post(
-  "/tareas/bulk-desde-plantilla",
-  requireAuth,
-  TareasController.crearTareasDesdePlantilla
-);
-
-router.patch(
-  "/tareas/:id/estado",
-  requireAuth,
-  TareasController.actualizarEstado
-);
-
-// VISTA SUPERVISIÓN / ADMIN
-router.get(
-  "/tareas/supervision/resumen",
-  requireAuth,
-  TareasController.getResumenSupervision
-);
-
-// DRIVE / ARCHIVOS
-router.post(
-  "/tareas/:id/ensure-drive-folder",
-  requireAuth,
-  TareasController.ensureDriveFolder
-);
-
-router.post(
-  "/tareas/:id/archivos",
-  requireAuth,
-  upload.single("archivo"),
-  TareasController.subirArchivo
-);
+router.use("/tareas", tareasRoutes);
 
 export default router;
