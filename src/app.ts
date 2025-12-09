@@ -6,7 +6,7 @@ import cookieParser from "cookie-parser";
 
 import routes from "./routes.js";              // entry de rutas principales (auth, drive, etc.)
 import trabajadorRoutes from "./routes/trabajador.routes";
-import tareasRoutes from "./routes/tareas.routes"; // 👈 RUTAS DE TAREAS
+import tareasRoutes from "./routes/tareas.routes.js"; // 👈 RUTAS DE TAREAS
 
 import { errorHandler } from "./middlewares/error.middleware.js";
 import "dotenv/config";
