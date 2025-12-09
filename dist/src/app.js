@@ -9,21 +9,20 @@ const express_1 = __importDefault(require("express"));
 const cors_1 = __importDefault(require("cors"));
 const morgan_1 = __importDefault(require("morgan"));
 const cookie_parser_1 = __importDefault(require("cookie-parser"));
-const routes_js_1 = __importDefault(require("./routes.js")); // entry de rutas principales (auth, drive, etc.)
+const routes_js_1 = __importDefault(require("./routes.js"));
 const trabajador_routes_1 = __importDefault(require("./routes/trabajador.routes"));
-const tareas_routes_1 = __importDefault(require("./routes/tareas.routes")); // 👈 rutas de tareas
+const tareas_routes_1 = __importDefault(require("./routes/tareas.routes"));
 const error_middleware_js_1 = require("./middlewares/error.middleware.js");
 require("dotenv/config");
 const googleDrive_1 = require("./services/googleDrive");
 const node_cron_1 = __importDefault(require("node-cron"));
 const generarTareas_1 = require("./jobs/generarTareas");
 const auth_controller_1 = require("./controllers/auth.controller");
+// 👇 SUPER IMPORTANTE: log de versión
+console.log("⚙️ [APP] Cargando app.ts **CINTAX TAREAS V5**");
 exports.app = (0, express_1.default)();
 const ENABLE_TASK_CRON = process.env.ENABLE_TASK_CRON === "true";
 const ENABLE_GROUPS_CRON = process.env.ENABLE_GROUPS_CRON === "true";
-// =============================
-//  CORS CONFIG
-// =============================
 const corsOptions = {
     origin: [
         "https://intranet-cintax.netlify.app",
@@ -34,30 +33,22 @@ const corsOptions = {
     allowedHeaders: ["Content-Type", "Authorization"],
     optionsSuccessStatus: 204,
 };
-// ✅ CORS global
 exports.app.use((0, cors_1.default)(corsOptions));
-// =============================
-//  MIDDLEWARES
-// =============================
 exports.app.use((0, cookie_parser_1.default)());
 exports.app.use(express_1.default.json());
 exports.app.use((0, morgan_1.default)("dev"));
-// =============================
-//  RUTAS PRINCIPALES API
-// =============================
-// /api/health, /api/auth/*, /api/drive/*
+// 🔍 Ruta de debug de versión
+exports.app.get("/api/debug-version", (_req, res) => {
+    res.json({
+        ok: true,
+        version: "cintax-tareas-v5",
+    });
+});
+// Rutas API
 exports.app.use("/api", routes_js_1.default);
-// /api/trabajadores/*
 exports.app.use("/api", trabajador_routes_1.default);
-// /api/tareas/*  → vienen desde src/routes/tareas.routes.ts
 exports.app.use("/api/tareas", tareas_routes_1.default);
-// =============================
-//  DEBUG ENDPOINTS (Opcionales)
-// =============================
 exports.app.get("/debug/cookies", (req, res) => res.json({ cookies: req.cookies }));
-// =============================
-//  GOOGLE DRIVE CONNECTOR
-// =============================
 exports.app.get("/admin/drive/auth-url", (_req, res) => {
     const url = googleDrive_1.oauth2Client.generateAuthUrl({
         access_type: "offline",
@@ -67,10 +58,6 @@ exports.app.get("/admin/drive/auth-url", (_req, res) => {
     });
     res.send(`<a href="${url}">Conectar admin Cintax</a>`);
 });
-// =============================
-//  ENDPOINT MANUAL (TEMPORAL)
-// =============================
-// POST /api/tareas/generar  → genera tareas automáticas a mano
 exports.app.post("/api/tareas/generar", async (_req, res) => {
     try {
         await (0, generarTareas_1.generarTareasAutomaticas)();
@@ -81,13 +68,7 @@ exports.app.post("/api/tareas/generar", async (_req, res) => {
         res.status(500).json({ ok: false });
     }
 });
-// =============================
-//  MANEJADOR GLOBAL DE ERRORES
-// =============================
 exports.app.use(error_middleware_js_1.errorHandler);
-// =============================
-//  CRON JOBS
-// =============================
 if (ENABLE_TASK_CRON) {
     node_cron_1.default.schedule("0 9 * * *", async () => {
         try {
