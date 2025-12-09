@@ -4,9 +4,9 @@ import cors from "cors";
 import morgan from "morgan";
 import cookieParser from "cookie-parser";
 
-import routes from "./routes.js";              // /api/health, /api/auth, /api/drive
+import routes from "./routes.js";
 import trabajadorRoutes from "./routes/trabajador.routes";
-import tareasRoutes from "./routes/tareas.routes"; // 👈 RUTAS DE TAREAS
+import tareasRoutes from "./routes/tareas.routes";
 
 import { errorHandler } from "./middlewares/error.middleware.js";
 import "dotenv/config";
@@ -16,14 +16,13 @@ import cron from "node-cron";
 import { generarTareasAutomaticas } from "./jobs/generarTareas";
 import { syncAreasFromGroupsCore } from "./controllers/auth.controller";
 
+console.log("⚙️ [APP] Cargando app.ts con rutas de tareas v4"); // 👈 DEBUG
+
 export const app = express();
 
 const ENABLE_TASK_CRON = process.env.ENABLE_TASK_CRON === "true";
 const ENABLE_GROUPS_CRON = process.env.ENABLE_GROUPS_CRON === "true";
 
-// =============================
-//  CORS CONFIG
-// =============================
 const corsOptions: cors.CorsOptions = {
   origin: [
     "https://intranet-cintax.netlify.app",
@@ -35,39 +34,36 @@ const corsOptions: cors.CorsOptions = {
   optionsSuccessStatus: 204,
 };
 
-// ✅ CORS global
 app.use(cors(corsOptions));
-
-// =============================
-//  MIDDLEWARES
-// =============================
 app.use(cookieParser());
 app.use(express.json());
 app.use(morgan("dev"));
 
 // =============================
+//  DEBUG: versión de la API
+// =============================
+app.get("/api/debug-version", (_req, res) => {
+  res.json({
+    ok: true,
+    version: "cintax-tareas-v4",   // 👈 cambia esto si quieres
+  });
+});
+
+// =============================
 //  RUTAS PRINCIPALES API
 // =============================
 
-// /api/health, /api/auth/*, /api/drive/*
 app.use("/api", routes);
-
-// /api/trabajadores/*
 app.use("/api", trabajadorRoutes);
 
-// /api/tareas/*  → viene de src/routes/tareas.routes.ts
+// 👇 TODAS las rutas de src/routes/tareas.routes.ts
+//    quedan bajo /api/tareas/...
 app.use("/api/tareas", tareasRoutes);
 
-// =============================
-//  DEBUG ENDPOINTS (Opcionales)
-// =============================
 app.get("/debug/cookies", (req, res) =>
   res.json({ cookies: (req as any).cookies })
 );
 
-// =============================
-//  GOOGLE DRIVE CONNECTOR
-// =============================
 app.get("/admin/drive/auth-url", (_req, res) => {
   const url = oauth2Client.generateAuthUrl({
     access_type: "offline",
@@ -78,10 +74,6 @@ app.get("/admin/drive/auth-url", (_req, res) => {
   res.send(`<a href="${url}">Conectar admin Cintax</a>`);
 });
 
-// =============================
-//  ENDPOINT MANUAL (TEMPORAL)
-// =============================
-// POST /api/tareas/generar  → genera tareas automáticas a mano
 app.post("/api/tareas/generar", async (_req, res) => {
   try {
     await generarTareasAutomaticas();
@@ -92,14 +84,8 @@ app.post("/api/tareas/generar", async (_req, res) => {
   }
 });
 
-// =============================
-//  MANEJADOR GLOBAL DE ERRORES
-// =============================
 app.use(errorHandler);
 
-// =============================
-//  CRON JOBS
-// =============================
 if (ENABLE_TASK_CRON) {
   cron.schedule("0 9 * * *", async () => {
     try {
@@ -123,11 +109,3 @@ if (ENABLE_GROUPS_CRON) {
     }
   });
 }
-
-app.get("/api/debug-version", (_req, res) => {
-  res.json({
-    ok: true,
-    version: "tareas-mis-ruts-v3", // ponle lo que quieras para saber que es esta versión
-  });
-});
-
