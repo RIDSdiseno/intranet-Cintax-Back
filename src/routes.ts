@@ -1,7 +1,8 @@
 import { Router } from "express";
 import authRoutes from "./routes/auth.route";
 import googleRoutes from "./routes/google.route";
-import tareasRoutes from "./routes/tareas.route";
+import tareasRoutes from "./routes/tareas.routes"; // 👈 mismo nombre que el archivo que mostraste
+
 
 const router = Router();
 
