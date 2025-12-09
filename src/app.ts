@@ -4,9 +4,9 @@ import cors from "cors";
 import morgan from "morgan";
 import cookieParser from "cookie-parser";
 
-import routes from "./routes.js";              // entry de rutas principales (auth, drive, etc.)
+import routes from "./routes.js";              // /api/health, /api/auth, /api/drive
 import trabajadorRoutes from "./routes/trabajador.routes";
-import tareasRoutes from "./routes/tareas.routes.js"; // 👈 RUTAS DE TAREAS
+import tareasRoutes from "./routes/tareas.routes"; // 👈 RUTAS DE TAREAS
 
 import { errorHandler } from "./middlewares/error.middleware.js";
 import "dotenv/config";
@@ -55,7 +55,7 @@ app.use("/api", routes);
 // /api/trabajadores/*
 app.use("/api", trabajadorRoutes);
 
-// /api/tareas/*  → vienen desde src/routes/tareas.routes.ts
+// /api/tareas/*  → viene de src/routes/tareas.routes.ts
 app.use("/api/tareas", tareasRoutes);
 
 // =============================
@@ -123,3 +123,11 @@ if (ENABLE_GROUPS_CRON) {
     }
   });
 }
+
+app.get("/api/debug-version", (_req, res) => {
+  res.json({
+    ok: true,
+    version: "tareas-mis-ruts-v3", // ponle lo que quieras para saber que es esta versión
+  });
+});
+
