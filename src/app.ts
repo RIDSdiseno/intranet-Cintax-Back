@@ -3,7 +3,7 @@ import express from "express";
 import cors from "cors";
 import morgan from "morgan";
 import cookieParser from "cookie-parser";
-import routes from "./routes.js";
+import routes from "./routes.js"; // entry de rutas principales
 import trabajadorRoutes from "./routes/trabajador.routes";
 import { errorHandler } from "./middlewares/error.middleware.js";
 import "dotenv/config";
@@ -26,13 +26,13 @@ const corsOptions: cors.CorsOptions = {
     "https://intranet-cintax.netlify.app",
     "http://localhost:5173",
   ],
-  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"], // 👈 incluye PATCH
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   credentials: true,
   allowedHeaders: ["Content-Type", "Authorization"],
   optionsSuccessStatus: 204,
 };
 
-// ✅ CORS global (sin app.options)
+// ✅ CORS global
 app.use(cors(corsOptions));
 
 // =============================
