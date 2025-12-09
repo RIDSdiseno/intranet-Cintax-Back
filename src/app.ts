@@ -3,8 +3,11 @@ import express from "express";
 import cors from "cors";
 import morgan from "morgan";
 import cookieParser from "cookie-parser";
-import routes from "./routes.js"; // entry de rutas principales
+
+import routes from "./routes.js"; // entry de rutas principales (auth, drive, etc.)
 import trabajadorRoutes from "./routes/trabajador.routes";
+import tareasRoutes from "./routes/tareas.routes"; // 👈 rutas de tareas
+
 import { errorHandler } from "./middlewares/error.middleware.js";
 import "dotenv/config";
 
@@ -45,8 +48,14 @@ app.use(morgan("dev"));
 // =============================
 //  RUTAS PRINCIPALES API
 // =============================
+// /api/health, /api/auth/*, /api/drive/*
 app.use("/api", routes);
+
+// /api/trabajadores/*
 app.use("/api", trabajadorRoutes);
+
+// /api/tareas/*  → vienen desde src/routes/tareas.routes.ts
+app.use("/api/tareas", tareasRoutes);
 
 // =============================
 //  DEBUG ENDPOINTS (Opcionales)
@@ -71,6 +80,7 @@ app.get("/admin/drive/auth-url", (_req, res) => {
 // =============================
 //  ENDPOINT MANUAL (TEMPORAL)
 // =============================
+// POST /api/tareas/generar  → genera tareas automáticas a mano
 app.post("/api/tareas/generar", async (_req, res) => {
   try {
     await generarTareasAutomaticas();

@@ -4,7 +4,6 @@ import { Router } from "express";
 // Rutas hijas
 import authRoutes from "./routes/auth.route";
 import googleRoutes from "./routes/google.route";
-import tareasRoutes from "./routes/tareas.routes"; // 👈 aquí se montan TODAS las rutas de tareas
 
 const router = Router();
 
@@ -25,11 +24,7 @@ router.use("/auth", authRoutes);
 // =============================
 router.use("/drive", googleRoutes);
 
-// =============================
-//  TAREAS
-//  → todo lo que esté en src/routes/tareas.routes.ts
-//     queda bajo /api/tareas/...
-// =============================
-router.use("/tareas", tareasRoutes);
+// 👇 OJO: aquí YA NO montamos /tareas
+// router.use("/tareas", tareasRoutes);
 
 export default router;
