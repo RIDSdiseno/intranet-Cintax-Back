@@ -16,7 +16,8 @@ import cron from "node-cron";
 import { generarTareasAutomaticas } from "./jobs/generarTareas";
 import { syncAreasFromGroupsCore } from "./controllers/auth.controller";
 
-console.log("⚙️ [APP] Cargando app.ts con rutas de tareas v4"); // 👈 DEBUG
+// 👇 SUPER IMPORTANTE: log de versión
+console.log("⚙️ [APP] Cargando app.ts **CINTAX TAREAS V5**");
 
 export const app = express();
 
@@ -39,25 +40,17 @@ app.use(cookieParser());
 app.use(express.json());
 app.use(morgan("dev"));
 
-// =============================
-//  DEBUG: versión de la API
-// =============================
+// 🔍 Ruta de debug de versión
 app.get("/api/debug-version", (_req, res) => {
   res.json({
     ok: true,
-    version: "cintax-tareas-v4",   // 👈 cambia esto si quieres
+    version: "cintax-tareas-v5",
   });
 });
 
-// =============================
-//  RUTAS PRINCIPALES API
-// =============================
-
+// Rutas API
 app.use("/api", routes);
 app.use("/api", trabajadorRoutes);
-
-// 👇 TODAS las rutas de src/routes/tareas.routes.ts
-//    quedan bajo /api/tareas/...
 app.use("/api/tareas", tareasRoutes);
 
 app.get("/debug/cookies", (req, res) =>
