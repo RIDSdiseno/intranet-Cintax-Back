@@ -57,7 +57,7 @@ export const getNotificaciones = async (req: Request, res: Response) => {
 
     // Por si acaso, eliminar duplicados
     const sinDuplicados = Array.from(
-      new Map(notificaciones.map((n) => [n.id, n])).values()
+      new Map(notificaciones.map((n: any) => [n.id, n])).values()
     );
 
     return res.json(sinDuplicados);
@@ -103,7 +103,9 @@ export const getNotificacionesResumen = async (req: Request, res: Response) => {
         select: { id_tarea_asignada: true },
       });
 
-      filtroFecha.tareaId = { in: tareasMes.map((t) => t.id_tarea_asignada) };
+      filtroFecha.tareaId = {
+        in: tareasMes.map((t) => t.id_tarea_asignada),
+      };
       where = { ...where, ...filtroFecha };
     }
 
@@ -113,11 +115,11 @@ export const getNotificacionesResumen = async (req: Request, res: Response) => {
     const notificaciones = await prisma.notificacion.findMany({ where });
 
     const total = notificaciones.length;
-    const noLeidas = notificaciones.filter((n) => !n.leida).length;
+    const noLeidas = notificaciones.filter((n: any) => !n.leida).length;
 
     // Agrupar por mes (según createdAt)
     const porMes = Object.values(
-      notificaciones.reduce((acc: any, n) => {
+      notificaciones.reduce((acc: any, n: any) => {
         const f = new Date(n.createdAt);
         const key = `${f.getFullYear()}-${f.getMonth() + 1}`;
         if (!acc[key]) acc[key] = { periodo: key, total: 0 };
@@ -128,7 +130,7 @@ export const getNotificacionesResumen = async (req: Request, res: Response) => {
 
     // Agrupar por tarea
     const porTarea = Object.values(
-      notificaciones.reduce((acc: any, n) => {
+      notificaciones.reduce((acc: any, n: any) => {
         const key = n.tareaId || "sin_tarea";
         if (!acc[key]) acc[key] = { tareaId: key, total: 0 };
         acc[key].total++;
@@ -162,11 +164,31 @@ export const marcarComoLeida = async (req: Request, res: Response) => {
     return res.status(401).json({ message: "No autorizado" });
   }
 
+  // id viene como string desde la ruta → lo convertimos a number
+  const notificacionId = Number(id);
+  if (Number.isNaN(notificacionId)) {
+    return res.status(400).json({ message: "ID de notificación inválido" });
+  }
+
   try {
+    // 1) Verificar que la notificación exista y sea del usuario
+    const notificacion = await prisma.notificacion.findFirst({
+      where: {
+        id: notificacionId,
+        trabajadorId,
+      },
+    });
+
+    if (!notificacion) {
+      return res.status(404).json({
+        message: "Notificación no encontrada o no pertenece al usuario.",
+      });
+    }
+
+    // 2) Marcar como leída usando solo el ID (clave única)
     const notificacionActualizada = await prisma.notificacion.update({
       where: {
-        id,
-        trabajadorId,
+        id: notificacionId,
       },
       data: { leida: true },
     });
@@ -178,7 +200,7 @@ export const marcarComoLeida = async (req: Request, res: Response) => {
       error.code === "P2025"
     ) {
       return res.status(404).json({
-        message: "Notificación no encontrada o no pertenece al usuario.",
+        message: "Notificación no encontrada.",
       });
     }
 

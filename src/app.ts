@@ -118,9 +118,46 @@ app.get("/debug/test-notificaciones", async (_req: Request, res: Response) => {
     log(`Limpiadas ${deletedTareas.count} tareas de prueba antiguas.`);
 
     // 3. CREAR PLANTILLAS DE TAREA
-    const plantillaVencida = await prisma.tareaPlantilla.upsert({ where: { nombre: "[TEST] Tarea Vencida" }, update: {}, create: { nombre: "[TEST] Tarea Vencida", area: Area.CONTA, frecuencia: FrecuenciaTarea.UNICA, presentacion: Presentacion.INTERNO, detalle: "Vencida" } });
-    const plantillaHoy = await prisma.tareaPlantilla.upsert({ where: { nombre: "[TEST] Tarea para Hoy" }, update: {}, create: { nombre: "[TEST] Tarea para Hoy", area: Area.CONTA, frecuencia: FrecuenciaTarea.UNICA, presentacion: Presentacion.INTERNO, detalle: "Hoy" } });
-    const plantillaFutura = await prisma.tareaPlantilla.upsert({ where: { nombre: "[TEST] Tarea Futura" }, update: {}, create: { nombre: "[TEST] Tarea Futura", area: Area.CONTA, frecuencia: FrecuenciaTarea.UNICA, presentacion: Presentacion.INTERNO, detalle: "Futura" } });
+    // Helper para crear plantilla de prueba si no existe
+    async function ensureTestPlantilla(
+      nombre: string,
+      detalle: string
+    ) {
+      let plantilla = await prisma.tareaPlantilla.findFirst({
+        where: { nombre },
+      });
+
+      if (!plantilla) {
+        plantilla = await prisma.tareaPlantilla.create({
+          data: {
+            nombre,
+            detalle,
+            area: Area.CONTA,
+            frecuencia: FrecuenciaTarea.UNICA,
+            presentacion: Presentacion.INTERNO,
+          },
+        });
+      }
+
+  return plantilla;
+}
+
+const plantillaVencida = await ensureTestPlantilla(
+  "[TEST] Tarea Vencida",
+  "Vencida"
+);
+
+const plantillaHoy = await ensureTestPlantilla(
+  "[TEST] Tarea para Hoy",
+  "Hoy"
+);
+
+const plantillaFutura = await ensureTestPlantilla(
+  "[TEST] Tarea Futura",
+  "Futura"
+);
+
+
     log("Plantillas de prueba listas.");
 
     // 4. CREAR TAREAS CON DISTINTAS FECHAS

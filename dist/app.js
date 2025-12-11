@@ -103,9 +103,27 @@ exports.app.get("/debug/test-notificaciones", async (_req, res) => {
         });
         log(`Limpiadas ${deletedTareas.count} tareas de prueba antiguas.`);
         // 3. CREAR PLANTILLAS DE TAREA
-        const plantillaVencida = await prisma_1.prisma.tareaPlantilla.upsert({ where: { nombre: "[TEST] Tarea Vencida" }, update: {}, create: { nombre: "[TEST] Tarea Vencida", area: client_1.Area.CONTA, frecuencia: client_1.FrecuenciaTarea.UNICA, presentacion: client_1.Presentacion.INTERNO, detalle: "Vencida" } });
-        const plantillaHoy = await prisma_1.prisma.tareaPlantilla.upsert({ where: { nombre: "[TEST] Tarea para Hoy" }, update: {}, create: { nombre: "[TEST] Tarea para Hoy", area: client_1.Area.CONTA, frecuencia: client_1.FrecuenciaTarea.UNICA, presentacion: client_1.Presentacion.INTERNO, detalle: "Hoy" } });
-        const plantillaFutura = await prisma_1.prisma.tareaPlantilla.upsert({ where: { nombre: "[TEST] Tarea Futura" }, update: {}, create: { nombre: "[TEST] Tarea Futura", area: client_1.Area.CONTA, frecuencia: client_1.FrecuenciaTarea.UNICA, presentacion: client_1.Presentacion.INTERNO, detalle: "Futura" } });
+        // Helper para crear plantilla de prueba si no existe
+        async function ensureTestPlantilla(nombre, detalle) {
+            let plantilla = await prisma_1.prisma.tareaPlantilla.findFirst({
+                where: { nombre },
+            });
+            if (!plantilla) {
+                plantilla = await prisma_1.prisma.tareaPlantilla.create({
+                    data: {
+                        nombre,
+                        detalle,
+                        area: client_1.Area.CONTA,
+                        frecuencia: client_1.FrecuenciaTarea.UNICA,
+                        presentacion: client_1.Presentacion.INTERNO,
+                    },
+                });
+            }
+            return plantilla;
+        }
+        const plantillaVencida = await ensureTestPlantilla("[TEST] Tarea Vencida", "Vencida");
+        const plantillaHoy = await ensureTestPlantilla("[TEST] Tarea para Hoy", "Hoy");
+        const plantillaFutura = await ensureTestPlantilla("[TEST] Tarea Futura", "Futura");
         log("Plantillas de prueba listas.");
         // 4. CREAR TAREAS CON DISTINTAS FECHAS
         const hoy = new Date();

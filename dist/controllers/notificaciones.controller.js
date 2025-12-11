@@ -84,7 +84,9 @@ const getNotificacionesResumen = async (req, res) => {
                 },
                 select: { id_tarea_asignada: true },
             });
-            filtroFecha.tareaId = { in: tareasMes.map((t) => t.id_tarea_asignada) };
+            filtroFecha.tareaId = {
+                in: tareasMes.map((t) => t.id_tarea_asignada),
+            };
             where = { ...where, ...filtroFecha };
         }
         // ======================
@@ -135,11 +137,28 @@ const marcarComoLeida = async (req, res) => {
     if (!trabajadorId) {
         return res.status(401).json({ message: "No autorizado" });
     }
+    // id viene como string desde la ruta → lo convertimos a number
+    const notificacionId = Number(id);
+    if (Number.isNaN(notificacionId)) {
+        return res.status(400).json({ message: "ID de notificación inválido" });
+    }
     try {
+        // 1) Verificar que la notificación exista y sea del usuario
+        const notificacion = await prisma_1.prisma.notificacion.findFirst({
+            where: {
+                id: notificacionId,
+                trabajadorId,
+            },
+        });
+        if (!notificacion) {
+            return res.status(404).json({
+                message: "Notificación no encontrada o no pertenece al usuario.",
+            });
+        }
+        // 2) Marcar como leída usando solo el ID (clave única)
         const notificacionActualizada = await prisma_1.prisma.notificacion.update({
             where: {
-                id,
-                trabajadorId,
+                id: notificacionId,
             },
             data: { leida: true },
         });
@@ -149,7 +168,7 @@ const marcarComoLeida = async (req, res) => {
         if (error instanceof client_1.Prisma.PrismaClientKnownRequestError &&
             error.code === "P2025") {
             return res.status(404).json({
-                message: "Notificación no encontrada o no pertenece al usuario.",
+                message: "Notificación no encontrada.",
             });
         }
         console.error(error);
