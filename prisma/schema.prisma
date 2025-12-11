@@ -55,7 +55,7 @@ model Ticket {
 model TareaPlantilla {
   id_tarea_plantilla   Int             @id @default(autoincrement())
   area                 Area
-  nombre               String
+  nombre               String          @unique
   detalle              String
   frecuenciaTexto      String?
   plazoMaximoTexto     String?

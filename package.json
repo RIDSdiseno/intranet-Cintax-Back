@@ -14,9 +14,6 @@
     "seed": "prisma db seed",
     "prepare": "prisma generate"
   },
-  "prisma": {
-    "seed": "ts-node prisma/seed.ts"
-  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/RIDSdiseno/intranet-Cintax-Back.git"
@@ -34,6 +31,7 @@
     "bcrypt": "^6.0.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
+    "date-fns": "^4.1.0",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
     "google-auth-library": "^10.5.0",
@@ -55,6 +53,7 @@
     "@types/morgan": "^1.9.10",
     "@types/multer": "^2.0.0",
     "@types/node": "^24.10.1",
+    "@types/node-cron": "^3.0.11",
     "prisma": "^6.19.0",
     "rimraf": "^6.1.2",
     "ts-node-dev": "^2.0.0",
