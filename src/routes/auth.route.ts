@@ -1,3 +1,4 @@
+// src/routes/auth.routes.ts
 import { Router } from "express";
 import { authGuard } from "../middlewares/auth.middleware";
 import {
@@ -10,26 +11,33 @@ import {
   logoutTrabajador,
   registerTrabajador,
   syncTickets,
-  // 👇 nuevos controllers
+  getMe,
+  getMyProfile,
 } from "../controllers/auth.controller";
 
 const r = Router();
 
 // 🔐 Auth
-r.post("/register", registerTrabajador);      // registro manual
-r.post("/google", googleLoginTrabajador);     // login con Google
+r.post("/register", registerTrabajador);
+r.post("/google", googleLoginTrabajador);
 r.post("/login", loginTrabajador);
 r.post("/logout", authGuard, logoutTrabajador);
 
-// 🎫 Tickets / Freshdesk
+// 👇 Resumen (para navbar, permisos, etc.)
+r.get("/me", authGuard, getMe);
+
+// 👇 Perfil completo (para Configuración)
+r.get("/profile", authGuard, getMyProfile);
+
+// 🎫 Tickets
 r.post("/sync-freshdesk", authGuard, syncTickets);
 r.get("/getTickets", authGuard, listTickets);
 r.post("/createTicket", authGuard, createTicket);
 
-// 📌 Tareas asignadas (vista tipo analistas)
+// 📌 Tareas asignadas
 r.get("/tareas-asignadas", authGuard, listTareasAsignadas);
 
-// 📂 Conexión a Google Drive (usa el id del trabajador en el state)
+// 📂 Drive
 r.get("/drive/connect", authGuard, connectDrive);
 
 export default r;

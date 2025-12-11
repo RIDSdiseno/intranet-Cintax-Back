@@ -7,7 +7,7 @@ import {
   listCintax2025Folders,
   listFilesInFolder,
   listMySharedFolders,
-  listMyRutFolders,        // 👈 NUEVO
+  listMyRutFolders,
   syncAreasFromGroups,
   uploadToFolder,
 } from "../controllers/auth.controller";
@@ -23,12 +23,11 @@ const upload = multer({
 r.get("/connect", authGuard, connectDrive);
 r.get("/callback", driveCallback);
 
-// Carpetas CINTAX visibles (por área/permisos) -> lo usas en DrivePage
-r.get("/cintax/:year", authGuard, listMySharedFolders);
+// 🔹 AHORA /cintax/:year usa listMyRutFolders (el que considera permisos por RUT)
+r.get("/cintax/:year", authGuard, listMyRutFolders);
 
-// 🔹 NUEVO: Carpetas de RUT (subcarpetas de las categorías) visibles para el usuario
-//    Esto es lo que vas a consumir desde la página de Tareas
-r.get("/my-ruts/:year", authGuard, listMyRutFolders);
+// (opcional) ruta extra si quieres ver solo categorías por área
+r.get("/shared/:year", authGuard, listMySharedFolders);
 
 // Archivos dentro de una carpeta + upload
 r.get("/folder/:id/files", authGuard, listFilesInFolder);

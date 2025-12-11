@@ -19,13 +19,13 @@ model Trabajador {
   areaInterna        Area?
   lastActivityAt     DateTime?
   tipoRelacion       TipoRelacion?
+  /// Código de carpeta en Drive dentro del área (ej: "A01", "A02")
+  carpetaDriveCodigo String?          @db.VarChar(50)
+  Notificacion       Notificacion[]
   refreshTokens      RefreshToken[]
   tareasAsignadas    TareaAsignada[]  @relation("TrabajadorTareas")
   tareasDefault      TareaPlantilla[] @relation("TareaResponsableDefault")
   tickets            Ticket[]
-
-  /// Código de carpeta en Drive dentro del área (ej: "A01", "A02")
-  carpetaDriveCodigo String?          @db.VarChar(50)
 }
 
 model RefreshToken {
@@ -75,22 +75,22 @@ model TareaPlantilla {
 }
 
 model TareaAsignada {
-  id_tarea_asignada Int            @id @default(autoincrement())
-  tareaPlantillaId  Int
-  trabajadorId      Int?
-  estado            EstadoTarea    @default(PENDIENTE)
-  fechaProgramada   DateTime
-  fechaComplecion   DateTime?
-  comentarios       String?
-  createdAt         DateTime       @default(now())
-  updatedAt         DateTime       @updatedAt
+  id_tarea_asignada  Int            @id @default(autoincrement())
+  tareaPlantillaId   Int
+  trabajadorId       Int?
+  estado             EstadoTarea    @default(PENDIENTE)
+  fechaProgramada    DateTime
+  fechaComplecion    DateTime?
+  comentarios        String?
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
   /// RUT del cliente al que aplica esta tarea (ej: "76.123.456-7")
-  rutCliente        String?
-  tareaPlantilla    TareaPlantilla @relation(fields: [tareaPlantillaId], references: [id_tarea_plantilla])
-  asignado          Trabajador?    @relation("TrabajadorTareas", fields: [trabajadorId], references: [id_trabajador])
-
+  rutCliente         String?
   /// Carpeta "TAREA" en Drive para esta tarea (CINTAX/YEAR/CONTA/A0X/RUT/MES/NOMBRE/TAREA)
-  driveTareaFolderId String?       @db.VarChar(255)
+  driveTareaFolderId String?        @db.VarChar(255)
+  Notificacion       Notificacion[]
+  tareaPlantilla     TareaPlantilla @relation(fields: [tareaPlantillaId], references: [id_tarea_plantilla])
+  asignado           Trabajador?    @relation("TrabajadorTareas", fields: [trabajadorId], references: [id_trabajador])
 
   @@index([trabajadorId])
   @@index([rutCliente])
@@ -100,7 +100,7 @@ model TareaAsignada {
 /// CLIENTES, con RUT y razón social, ligados a un ejecutivo (A01, etc.)
 model Cliente {
   id            Int      @id @default(autoincrement())
-  rut           String   @unique
+  rut           String
   razonSocial   String
   alias         String?
   activo        Boolean  @default(true)
@@ -109,8 +109,23 @@ model Cliente {
   agenteId      Int?
   codigoCartera String?
 
+  @@unique([rut, razonSocial])
   @@index([agenteId])
   @@index([codigoCartera])
+}
+
+model Notificacion {
+  id            String         @id
+  mensaje       String
+  leida         Boolean        @default(false)
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime
+  trabajadorId  Int
+  tareaId       Int?
+  TareaAsignada TareaAsignada? @relation(fields: [tareaId], references: [id_tarea_asignada])
+  Trabajador    Trabajador     @relation(fields: [trabajadorId], references: [id_trabajador])
+
+  @@index([trabajadorId])
 }
 
 enum TipoRelacion {

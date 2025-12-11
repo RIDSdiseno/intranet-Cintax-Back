@@ -5,6 +5,7 @@ import { Router } from "express";
 import authRoutes from "./routes/auth.route";
 import googleRoutes from "./routes/google.route";
 
+
 const router = Router();
 
 // =============================
@@ -26,5 +27,7 @@ router.use("/drive", googleRoutes);
 
 // 👇 OJO: aquí YA NO montamos /tareas
 // router.use("/tareas", tareasRoutes);
+
+
 
 export default router;
