@@ -7,6 +7,7 @@ import cookieParser from "cookie-parser";
 import routes from "./routes.js";
 import trabajadorRoutes from "./routes/trabajador.routes";
 import tareasRoutes from "./routes/tareas.routes";
+import dashboardRoutes from "./routes/dashboard.routes";
 
 import { errorHandler } from "./middlewares/error.middleware.js";
 import "dotenv/config";
@@ -57,6 +58,7 @@ app.get("/api/debug-version", (_req, res) => {
 app.use("/api", routes);
 app.use("/api", trabajadorRoutes);
 app.use("/api/tareas", tareasRoutes);
+app.use("/api/dashboard", dashboardRoutes);
 
 // NUEVAS rutas de notificaciones
 app.use("/api/notificaciones", notificacionesRoutes);
