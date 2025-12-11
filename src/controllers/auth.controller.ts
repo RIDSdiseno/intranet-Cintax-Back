@@ -1210,6 +1210,7 @@ export const listMyRutFolders = async (req: Request, res: Response) => {
 
     const drive = getAdminDriveClient();
 
+    // Año
     let yearString = req.params.year as string | undefined;
     if (!yearString) {
       yearString = new Date().getFullYear().toString();
@@ -1218,6 +1219,7 @@ export const listMyRutFolders = async (req: Request, res: Response) => {
     const basePath = ["CINTAX", yearString];
     const yearFolderId = await resolveFolderPath(drive, basePath);
 
+    // 1) Categorías de primer nivel (ADMIN, CONTA, RRHH, TRIBUTARIO, etc.)
     const categoriasRes = await drive.files.list({
       q: `'${yearFolderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
       fields: "files(id, name, mimeType, modifiedTime)",
@@ -1243,13 +1245,13 @@ export const listMyRutFolders = async (req: Request, res: Response) => {
     const isAdminUser =
       trabajador?.areaInterna === Area.ADMIN ||
       (GOOGLE_DRIVE_ADMIN_EMAIL !== undefined &&
-        userEmail === GOOGLE_DRIVE_ADMIN_EMAIL?.toLowerCase());
+        userEmail === GOOGLE_DRIVE_ADMIN_EMAIL);
 
     const isMultiAreaUser = MULTI_AREA_USERS.includes(userEmail);
+    const userDomain = userEmail.split("@")[1] ?? "";
 
-    const shouldStartAtCategorias = isAdminUser || isMultiAreaUser;
-
-    if (shouldStartAtCategorias) {
+    // === CASO 1: ADMIN o multi-área → parte en categorías (CONTA / RRHH / ...) ===
+    if (isAdminUser || isMultiAreaUser) {
       for (const categoria of categorias) {
         if (!categoria.id) continue;
 
@@ -1274,10 +1276,20 @@ export const listMyRutFolders = async (req: Request, res: Response) => {
       });
     }
 
-    const groupEnvVar = trabajador?.areaInterna
-      ? AREA_TO_GROUP_ENV[trabajador.areaInterna]
-      : undefined;
+    // === CASO 2: trabajador normal → sólo su área, y permisos en carpeta de área ===
+    if (!trabajador?.areaInterna) {
+      // no tiene área asignada → no ve nada
+      return res.json({
+        year: yearString,
+        basePath,
+        startLevel: "rut" as const,
+        folders: [],
+      });
+    }
 
+    const expectedName = trabajador.areaInterna.toString().toUpperCase();
+
+    const groupEnvVar = AREA_TO_GROUP_ENV[trabajador.areaInterna];
     const groupForUser = groupEnvVar
       ? process.env[groupEnvVar]?.toLowerCase() ?? null
       : null;
@@ -1285,8 +1297,56 @@ export const listMyRutFolders = async (req: Request, res: Response) => {
     for (const categoria of categorias) {
       if (!categoria.id) continue;
 
-      const categoriaName = categoria.name ?? "";
-      const catPathNames = ["CINTAX", yearString, categoriaName];
+      const categoriaNameUpper = (categoria.name ?? "").toUpperCase();
+      if (categoriaNameUpper !== expectedName) continue; // sólo su área
+
+      // 1) Revisamos permisos de la carpeta de área (CONTA / RRHH / TRIBUTARIO / ...)
+      try {
+        const permResp = await drive.permissions.list({
+          fileId: categoria.id,
+          fields: "permissions(emailAddress,type,domain,role)",
+        });
+
+        const perms = permResp.data.permissions ?? [];
+
+        const hasAccessToCategoria = perms.some((p) => {
+          const pEmail = p.emailAddress?.toLowerCase();
+
+          // permiso directo al usuario
+          if (p.type === "user" && pEmail === userEmail) return true;
+
+          // permiso al grupo de área (ej: contabilidad@cintax.cl)
+          if (p.type === "group" && groupForUser && pEmail === groupForUser) {
+            return true;
+          }
+
+          // permiso al dominio completo (ej: @cintax.cl)
+          if (
+            p.type === "domain" &&
+            p.domain?.toLowerCase() === userDomain.toLowerCase()
+          ) {
+            return true;
+          }
+
+          return false;
+        });
+
+        if (!hasAccessToCategoria) {
+          // no tiene acceso a la carpeta de área → no ve sus RUT
+          continue;
+        }
+      } catch (permErr) {
+        console.error(
+          "Error leyendo permisos de categoría (área)",
+          categoria.id,
+          permErr
+        );
+        // si falla permisos, por seguridad no mostramos nada de esa categoría
+        continue;
+      }
+
+      // 2) Si tiene acceso a la categoría, mostramos TODOS los RUT dentro de esa área
+      const catPathNames = ["CINTAX", yearString, categoria.name ?? ""];
 
       const subRes = await drive.files.list({
         q: `'${categoria.id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
@@ -1299,57 +1359,16 @@ export const listMyRutFolders = async (req: Request, res: Response) => {
       for (const folder of subFolders) {
         if (!folder.id) continue;
 
-        if (isAdminUser && !isMultiAreaUser) {
-          const pathNames = [...catPathNames, folder.name ?? ""];
-          visibleRutFolders.push({
-            id: folder.id,
-            name: folder.name ?? "",
-            categoria: categoriaName,
-            modifiedTime: folder.modifiedTime ?? null,
-            pathNames,
-            pathString: pathNames.join(" / "),
-          });
-          continue;
-        }
+        const pathNames = [...catPathNames, folder.name ?? ""];
 
-        try {
-          const permResp = await drive.permissions.list({
-            fileId: folder.id,
-            fields: "permissions(emailAddress,type,domain,role)",
-          });
-
-          const perms = permResp.data.permissions ?? [];
-
-          const hasAccess = perms.some((p) => {
-            const pEmail = p.emailAddress?.toLowerCase();
-
-            if (p.type === "user" && pEmail === userEmail) return true;
-
-            if (p.type === "group" && groupForUser && pEmail === groupForUser) {
-              return true;
-            }
-
-            return false;
-          });
-
-          if (hasAccess) {
-            const pathNames = [...catPathNames, folder.name ?? ""];
-            visibleRutFolders.push({
-              id: folder.id,
-              name: folder.name ?? "",
-              categoria: categoriaName,
-              modifiedTime: folder.modifiedTime ?? null,
-              pathNames,
-              pathString: pathNames.join(" / "),
-            });
-          }
-        } catch (permErr) {
-          console.error(
-            "Error leyendo permisos de carpeta RUT",
-            folder.id,
-            permErr
-          );
-        }
+        visibleRutFolders.push({
+          id: folder.id,
+          name: folder.name ?? "",
+          categoria: categoria.name ?? "",
+          modifiedTime: folder.modifiedTime ?? null,
+          pathNames,
+          pathString: pathNames.join(" / "),
+        });
       }
     }
 
@@ -1366,6 +1385,8 @@ export const listMyRutFolders = async (req: Request, res: Response) => {
       .json({ error: "Error listando carpetas de RUT" });
   }
 };
+
+
 
 export const syncAreasFromGroups = async (req: Request, res: Response) => {
   try {
