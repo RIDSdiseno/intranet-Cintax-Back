@@ -15,11 +15,10 @@ const upload = (0, multer_1.default)({
 // OAuth Google Drive
 r.get("/connect", auth_middleware_1.authGuard, auth_controller_1.connectDrive);
 r.get("/callback", auth_controller_1.driveCallback);
-// Carpetas CINTAX visibles (por área/permisos) -> lo usas en DrivePage
-r.get("/cintax/:year", auth_middleware_1.authGuard, auth_controller_1.listMySharedFolders);
-// 🔹 NUEVO: Carpetas de RUT (subcarpetas de las categorías) visibles para el usuario
-//    Esto es lo que vas a consumir desde la página de Tareas
-r.get("/my-ruts/:year", auth_middleware_1.authGuard, auth_controller_1.listMyRutFolders);
+// 🔹 AHORA /cintax/:year usa listMyRutFolders (el que considera permisos por RUT)
+r.get("/cintax/:year", auth_middleware_1.authGuard, auth_controller_1.listMyRutFolders);
+// (opcional) ruta extra si quieres ver solo categorías por área
+r.get("/shared/:year", auth_middleware_1.authGuard, auth_controller_1.listMySharedFolders);
 // Archivos dentro de una carpeta + upload
 r.get("/folder/:id/files", auth_middleware_1.authGuard, auth_controller_1.listFilesInFolder);
 r.post("/folder/:id/upload", auth_middleware_1.authGuard, upload.single("file"), auth_controller_1.uploadToFolder);

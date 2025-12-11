@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.listTareasAsignadas = exports.syncAreasFromGroups = exports.listMyRutFolders = exports.listMySharedFolders = exports.uploadToFolder = exports.listFilesInFolder = exports.listCintax2025Folders = exports.driveCallback = exports.connectDrive = exports.syncTickets = exports.createTicket = exports.listTickets = exports.logoutTrabajador = exports.loginTrabajador = exports.googleLoginTrabajador = exports.registerTrabajador = void 0;
+exports.listTareasAsignadas = exports.syncAreasFromGroups = exports.listMyRutFolders = exports.listMySharedFolders = exports.uploadToFolder = exports.listFilesInFolder = exports.listCintax2025Folders = exports.driveCallback = exports.connectDrive = exports.syncTickets = exports.createTicket = exports.listTickets = exports.logoutTrabajador = exports.loginTrabajador = exports.googleLoginTrabajador = exports.registerTrabajador = exports.updateMyProfile = exports.getMyProfile = exports.getMe = void 0;
 exports.syncAreasFromGroupsCore = syncAreasFromGroupsCore;
 exports.generarTareasAutomaticas = generarTareasAutomaticas;
 const client_1 = require("@prisma/client");
@@ -64,6 +64,112 @@ async function resolveAreaFromGroupsByEmail(email) {
     }
     return null;
 }
+// GET /api/auth/me
+const getMe = async (req, res) => {
+    try {
+        const userId = req.user?.id;
+        if (!userId) {
+            return res.status(401).json({ error: "No autenticado" });
+        }
+        const trabajador = await prisma.trabajador.findUnique({
+            where: { id_trabajador: userId },
+            select: {
+                id_trabajador: true,
+                nombre: true,
+                email: true,
+                areaInterna: true,
+            },
+        });
+        if (!trabajador) {
+            return res.status(404).json({ error: "Trabajador no encontrado" });
+        }
+        const isSupervisorOrAdmin = (0, roles_1.isSupervisorOrAdminForTrabajador)({
+            email: trabajador.email,
+            areaInterna: trabajador.areaInterna ?? undefined,
+        });
+        return res.json({
+            id: trabajador.id_trabajador,
+            nombre: trabajador.nombre,
+            email: trabajador.email,
+            areaInterna: trabajador.areaInterna,
+            isSupervisorOrAdmin,
+        });
+    }
+    catch (err) {
+        console.error("getMe error:", err);
+        return res.status(500).json({ error: "Error interno" });
+    }
+};
+exports.getMe = getMe;
+// ========================
+//  PERFIL DEL TRABAJADOR
+// ========================
+// GET /api/auth/me
+// en auth.controller.ts
+const getMyProfile = async (req, res) => {
+    try {
+        const userId = req.user?.id;
+        if (!userId) {
+            return res.status(401).json({ error: "No autenticado" });
+        }
+        const trabajador = await prisma.trabajador.findUnique({
+            where: { id_trabajador: userId },
+            select: {
+                id_trabajador: true,
+                nombre: true,
+                email: true,
+                status: true,
+                areaInterna: true,
+                tipoRelacion: true,
+                carpetaDriveCodigo: true,
+                createdAt: true,
+            },
+        });
+        if (!trabajador) {
+            return res.status(404).json({ error: "Trabajador no encontrado" });
+        }
+        return res.json({ trabajador });
+    }
+    catch (err) {
+        console.error("getMyProfile error:", err);
+        return res.status(500).json({ error: "Error interno" });
+    }
+};
+exports.getMyProfile = getMyProfile;
+// PUT /api/auth/me
+const updateMyProfile = async (req, res) => {
+    try {
+        const user = req.user;
+        if (!user?.id) {
+            return res.status(401).json({ error: "No autenticado" });
+        }
+        const { nombre } = req.body;
+        const updated = await prisma.trabajador.update({
+            where: { id_trabajador: user.id },
+            data: {
+                ...(nombre !== undefined ? { nombre } : {}),
+                // Si más adelante agregas columnas nuevas al modelo,
+                // aquí las puedes ir mapeando.
+            },
+            select: {
+                id_trabajador: true,
+                nombre: true,
+                email: true,
+                status: true,
+                areaInterna: true,
+                tipoRelacion: true,
+                carpetaDriveCodigo: true,
+                createdAt: true,
+            },
+        });
+        return res.json({ trabajador: updated });
+    }
+    catch (err) {
+        console.error("updateMyProfile error:", err);
+        return res.status(500).json({ error: "Error interno actualizando perfil" });
+    }
+};
+exports.updateMyProfile = updateMyProfile;
 async function syncAreasFromGroupsCore(clearOthers = false) {
     const groupMap = [
         { area: client_1.Area.ADMIN, envVar: "GROUP_ADMIN_EMAIL" },
