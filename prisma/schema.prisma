@@ -19,12 +19,13 @@ model Trabajador {
   areaInterna        Area?
   lastActivityAt     DateTime?
   tipoRelacion       TipoRelacion?
+  /// Código de carpeta en Drive dentro del área (ej: "A01", "A02")
   carpetaDriveCodigo String?          @db.VarChar(50)
+  Notificacion       Notificacion[]
   refreshTokens      RefreshToken[]
   tareasAsignadas    TareaAsignada[]  @relation("TrabajadorTareas")
   tareasDefault      TareaPlantilla[] @relation("TareaResponsableDefault")
   tickets            Ticket[]
-  notificaciones     Notificacion[]
 }
 
 model RefreshToken {
@@ -87,9 +88,9 @@ model TareaAsignada {
   rutCliente         String?
   /// Carpeta "TAREA" en Drive para esta tarea (CINTAX/YEAR/CONTA/A0X/RUT/MES/NOMBRE/TAREA)
   driveTareaFolderId String?        @db.VarChar(255)
+  Notificacion       Notificacion[]
   tareaPlantilla     TareaPlantilla @relation(fields: [tareaPlantillaId], references: [id_tarea_plantilla])
   asignado           Trabajador?    @relation("TrabajadorTareas", fields: [trabajadorId], references: [id_trabajador])
-  notificaciones     Notificacion[]
 
   @@index([trabajadorId])
   @@index([rutCliente])
@@ -114,17 +115,15 @@ model Cliente {
 }
 
 model Notificacion {
-  id           String   @id @default(cuid())
-  mensaje      String
-  leida        Boolean  @default(false)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
-
-  trabajador   Trabajador @relation(fields: [trabajadorId], references: [id_trabajador])
-  trabajadorId Int
-
-  tarea        TareaAsignada? @relation(fields: [tareaId], references: [id_tarea_asignada])
-  tareaId      Int?
+  id            String         @id
+  mensaje       String
+  leida         Boolean        @default(false)
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime
+  trabajadorId  Int
+  tareaId       Int?
+  TareaAsignada TareaAsignada? @relation(fields: [tareaId], references: [id_tarea_asignada])
+  Trabajador    Trabajador     @relation(fields: [trabajadorId], references: [id_trabajador])
 
   @@index([trabajadorId])
 }

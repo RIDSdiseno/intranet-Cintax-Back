@@ -1,4 +1,4 @@
-// src/scripts/seed-tareas-conta-all.ts
+// src/scripts/seed-tareas-conta-A01-test.ts
 import {
   PrismaClient,
   Area,
@@ -9,20 +9,27 @@ import {
 
 const prisma = new PrismaClient();
 
-// 🧩 IMPORTANTE: pon aquí el id_trabajador real de A01
-// Puedes verlo en la tabla Trabajador (Prisma Studio o DB).
-const FALLBACK_TRABAJADOR_ID: number | null = 1; // TODO: cambiar por el id real de A01
+// 🔹 Cartera objetivo (A01)
+const CARTERA_CONTA_A01 = "CONTA/A01";
+
+// 🔹 Agente objetivo (A01 → id 7)
+const AGENTE_A01_ID = 7;
 
 // 👉 Filtrado de clientes que quieres que entren en el seed
-// Por ahora: todos los clientes activos.
-// Si quieres solo los de A01, puedes usar: { activo: true, agenteId: FALLBACK_TRABAJADOR_ID }
+// Solo clientes activos de la cartera CONTA/A01 y del agente 7
 const CLIENTES_WHERE = {
   activo: true,
-  // agenteId: FALLBACK_TRABAJADOR_ID ?? undefined,
+  codigoCartera: CARTERA_CONTA_A01,
+  agenteId: AGENTE_A01_ID,
 };
 
-// Año que quieres usar para la fechaProgramada (para que caiga en CINTAX/2025/CONTA)
-const SEED_YEAR = 2025;
+// 🔹 Períodos que queremos sembrar
+//  - diciembre 2025  (produ)
+//  - enero 2025      (entorno pruebas)
+const PERIODOS = [
+  { year: 2025, monthIndex: 11, label: "diciembre 2025" }, // 11 = diciembre
+  { year: 2025, monthIndex: 0, label: "enero 2025 (pruebas)" }, // 0 = enero
+];
 
 // Tipo base de las tareas de CONTA
 type TareaContaBase = {
@@ -83,7 +90,7 @@ const TAREAS_CONTA_BASE: TareaContaBase[] = [
     plazoMaximoTexto: "Viernes de cada semana",
     presentacion: Presentacion.CLIENTE,
     diaMesVencimiento: null,
-    diaSemanaVencimiento: 5, // viernes
+    diaSemanaVencimiento: 5, // viernes (getDay() = 5)
   },
   {
     area: Area.CONTA,
@@ -287,122 +294,177 @@ const TAREAS_CONTA_BASE: TareaContaBase[] = [
   },
 ];
 
-async function main() {
-  console.log("🔹 Iniciando seed de tareas CONTA para clientes...");
-  console.log("📅 Año para fechaProgramada:", SEED_YEAR);
-  console.log("🧑‍💼 FALLBACK_TRABAJADOR_ID (A01):", FALLBACK_TRABAJADOR_ID);
+// Helper: primer día de semana X (0–6) de un mes
+const getFirstWeekdayOfMonth = (
+  year: number,
+  monthIndex: number,
+  weekday: number
+): Date => {
+  const d = new Date(year, monthIndex, 1);
+  while (d.getDay() !== weekday) {
+    d.setDate(d.getDate() + 1);
+  }
+  return d;
+};
 
-  // 1) Clientes según filtro
+// Calcula la fechaProgramada según la configuración de la tarea y el período dado
+const getFechaProgramada = (
+  year: number,
+  monthIndex: number,
+  tareaBase: TareaContaBase
+): Date => {
+  // Si hay día del mes definido → ese día de ese mes
+  if (tareaBase.diaMesVencimiento && tareaBase.diaMesVencimiento > 0) {
+    return new Date(year, monthIndex, tareaBase.diaMesVencimiento);
+  }
+
+  // Si hay día de la semana definido → primer día de ese tipo en el mes
+  if (
+    typeof tareaBase.diaSemanaVencimiento === "number" &&
+    tareaBase.diaSemanaVencimiento >= 0 &&
+    tareaBase.diaSemanaVencimiento <= 6
+  ) {
+    return getFirstWeekdayOfMonth(year, monthIndex, tareaBase.diaSemanaVencimiento);
+  }
+
+  // Fallback: día 10 del mes
+  return new Date(year, monthIndex, 10);
+};
+
+async function main() {
+  console.log("🔹 Iniciando seed de tareas CONTA para cartera A01 (A01 = agente 7)...");
+  console.log("🧾 Cartera:", CARTERA_CONTA_A01);
+  console.log("👤 Agente (A01):", AGENTE_A01_ID);
+
+  // 1) Clientes según filtro (solo cartera CONTA/A01 y agente 7)
   const clientes = await prisma.cliente.findMany({
     where: CLIENTES_WHERE,
   });
 
-  console.log(`📌 Clientes encontrados: ${clientes.length}`);
+  console.log(`📌 Clientes encontrados (CONTA/A01, agente 7): ${clientes.length}`);
 
   if (clientes.length === 0) {
     console.log("⚠️ No hay clientes que cumplan el filtro, nada que hacer.");
     return;
   }
 
-  // Puedes ajustar este día/mes, pero el año será SEED_YEAR
-  const fechaProgramada = new Date(SEED_YEAR, 0, 10); // 10 enero SEED_YEAR
-  console.log("📅 fechaProgramada usada:", fechaProgramada.toISOString());
+  // 2) Recorremos cada período (diciembre 2025, enero 2025 pruebas)
+  for (const periodo of PERIODOS) {
+    const { year, monthIndex, label } = periodo;
+    console.log(`\n=============================`);
+    console.log(`📅 Procesando período: ${label} (year=${year}, monthIndex=${monthIndex})`);
+    console.log(`=============================\n`);
 
-  // 2) Por cada tarea base, asegurar plantilla y asignar a todos los clientes
-  for (const tareaBase of TAREAS_CONTA_BASE) {
-    console.log(`\n▶️ Procesando plantilla: ${tareaBase.nombre}`);
+    const startMonth = new Date(year, monthIndex, 1);
+    const endMonth = new Date(year, monthIndex + 1, 1);
 
-    // Buscar plantilla por area + nombre
-    let plantilla = await prisma.tareaPlantilla.findFirst({
-      where: {
-        area: tareaBase.area,
-        nombre: tareaBase.nombre,
-      },
-    });
+    for (const tareaBase of TAREAS_CONTA_BASE) {
+      console.log(`\n▶️ Plantilla: ${tareaBase.nombre}`);
 
-    if (!plantilla) {
-      console.log("  📌 No existe, creando plantilla...");
-      plantilla = await prisma.tareaPlantilla.create({
-        data: {
+      const fechaProgramada = getFechaProgramada(year, monthIndex, tareaBase);
+      console.log("  📅 fechaProgramada:", fechaProgramada.toISOString());
+
+      // 2.1) Asegurar plantilla
+      let plantilla = await prisma.tareaPlantilla.findFirst({
+        where: {
           area: tareaBase.area,
           nombre: tareaBase.nombre,
-          detalle: tareaBase.detalle,
-          frecuencia: tareaBase.frecuencia,
-          frecuenciaTexto: tareaBase.frecuenciaTexto,
-          plazoMaximoTexto: tareaBase.plazoMaximoTexto,
-          presentacion: tareaBase.presentacion,
-          diaMesVencimiento: tareaBase.diaMesVencimiento ?? null,
-          diaSemanaVencimiento: tareaBase.diaSemanaVencimiento ?? null,
-          codigoDocumento: tareaBase.codigoDocumento ?? null,
-          activo: true,
-        },
-      });
-      console.log("  ✅ Plantilla creada con id:", plantilla.id_tarea_plantilla);
-    } else {
-      console.log(
-        "  ℹ️ Plantilla ya existe con id:",
-        plantilla.id_tarea_plantilla,
-        "→ actualizando metadatos..."
-      );
-
-      // Sincronizar campos importantes por si el seed cambio algo
-      plantilla = await prisma.tareaPlantilla.update({
-        where: { id_tarea_plantilla: plantilla.id_tarea_plantilla },
-        data: {
-          detalle: tareaBase.detalle,
-          frecuencia: tareaBase.frecuencia,
-          frecuenciaTexto: tareaBase.frecuenciaTexto,
-          plazoMaximoTexto: tareaBase.plazoMaximoTexto,
-          presentacion: tareaBase.presentacion,
-          diaMesVencimiento: tareaBase.diaMesVencimiento ?? null,
-          diaSemanaVencimiento: tareaBase.diaSemanaVencimiento ?? null,
-          codigoDocumento: tareaBase.codigoDocumento ?? null,
-          activo: true,
-        },
-      });
-    }
-
-    // Asignar tarea a cada cliente
-    for (const cliente of clientes) {
-      const rut = cliente.rut;
-
-      // Evitar duplicados por plantilla + rut
-      const yaExiste = await prisma.tareaAsignada.findFirst({
-        where: {
-          tareaPlantillaId: plantilla.id_tarea_plantilla,
-          rutCliente: rut,
         },
       });
 
-      if ( yaExiste ) {
+      if (!plantilla) {
+        console.log("  📌 No existe plantilla, creando...");
+        plantilla = await prisma.tareaPlantilla.create({
+          data: {
+            area: tareaBase.area,
+            nombre: tareaBase.nombre,
+            detalle: tareaBase.detalle,
+            frecuencia: tareaBase.frecuencia,
+            frecuenciaTexto: tareaBase.frecuenciaTexto,
+            plazoMaximoTexto: tareaBase.plazoMaximoTexto,
+            presentacion: tareaBase.presentacion,
+            diaMesVencimiento: tareaBase.diaMesVencimiento ?? null,
+            diaSemanaVencimiento: tareaBase.diaSemanaVencimiento ?? null,
+            codigoDocumento: tareaBase.codigoDocumento ?? null,
+            activo: true,
+          },
+        });
+        console.log("  ✅ Plantilla creada con id:", plantilla.id_tarea_plantilla);
+      } else {
         console.log(
-          `  ↩️ Ya existe tarea para RUT ${rut} (${cliente.razonSocial}), se omite.`
+          "  ℹ️ Plantilla ya existe con id:",
+          plantilla.id_tarea_plantilla,
+          "→ actualizando metadatos..."
         );
-        continue;
+
+        await prisma.tareaPlantilla.update({
+          where: { id_tarea_plantilla: plantilla.id_tarea_plantilla },
+          data: {
+            detalle: tareaBase.detalle,
+            frecuencia: tareaBase.frecuencia,
+            frecuenciaTexto: tareaBase.frecuenciaTexto,
+            plazoMaximoTexto: tareaBase.plazoMaximoTexto,
+            presentacion: tareaBase.presentacion,
+            diaMesVencimiento: tareaBase.diaMesVencimiento ?? null,
+            diaSemanaVencimiento: tareaBase.diaSemanaVencimiento ?? null,
+            codigoDocumento: tareaBase.codigoDocumento ?? null,
+            activo: true,
+          },
+        });
       }
 
-      // Si el cliente tiene agenteId se usa, si no, se usa el fallback (A01)
-      const trabajadorId =
-        cliente.agenteId ?? FALLBACK_TRABAJADOR_ID ?? undefined;
+      // 2.2) Asignar tarea para cada cliente en ESTE MES (sin duplicar por mes)
+      for (const cliente of clientes) {
+        const rut = cliente.rut;
+        const trabajadorId = cliente.agenteId;
 
-      console.log(
-        `  ➕ Creando tarea para RUT ${rut} (${cliente.razonSocial}) → trabajadorId: ${trabajadorId ?? "null"}`
-      );
+        if (!trabajadorId) {
+          console.log(
+            `  ⚠️ Cliente RUT ${rut} (${cliente.razonSocial}) no tiene agenteId, se omite.`
+          );
+          continue;
+        }
 
-      await prisma.tareaAsignada.create({
-        data: {
-          tareaPlantillaId: plantilla.id_tarea_plantilla,
-          rutCliente: rut,
-          trabajadorId,
-          estado: EstadoTarea.PENDIENTE,
-          fechaProgramada,
-          comentarios: `Tarea ${tareaBase.nombre} para ${cliente.razonSocial}`,
-        },
-      });
+        // 👇 Evitar duplicados SOLO dentro de este mes
+        const yaExisteEnMes = await prisma.tareaAsignada.findFirst({
+          where: {
+            tareaPlantillaId: plantilla.id_tarea_plantilla,
+            rutCliente: rut,
+            fechaProgramada: {
+              gte: startMonth,
+              lt: endMonth,
+            },
+          },
+        });
+
+        if (yaExisteEnMes) {
+          console.log(
+            `  ↩️ Ya existe tarea en ${label} para RUT ${rut} (${cliente.razonSocial}), se omite.`
+          );
+          continue;
+        }
+
+        console.log(
+          `  ➕ Creando tarea (${label}) para RUT ${rut} (${cliente.razonSocial}) → trabajadorId: ${trabajadorId}`
+        );
+
+        await prisma.tareaAsignada.create({
+          data: {
+            tareaPlantillaId: plantilla.id_tarea_plantilla,
+            rutCliente: rut,
+            trabajadorId,
+            estado: EstadoTarea.PENDIENTE,
+            fechaProgramada,
+            comentarios: `Tarea ${tareaBase.nombre} para ${cliente.razonSocial} (${label}, seed A01)`,
+          },
+        });
+      }
     }
   }
 
-  console.log("\n✅ Seed de tareas CONTA completado.");
+  console.log(
+    "\n✅ Seed de tareas CONTA para cartera A01 (agente 7, dic 2025 + ene 2025 pruebas) completado."
+  );
 }
 
 main()
