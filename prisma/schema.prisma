@@ -8,24 +8,24 @@ datasource db {
 }
 
 model Trabajador {
-  id_trabajador      Int              @id @default(autoincrement())
+  id_trabajador      Int           @id @default(autoincrement())
   nombre             String
-  email              String           @unique
+  email              String        @unique
   passwordHash       String?
-  googleId           String?          @unique
-  status             Boolean          @default(true)
-  createdAt          DateTime         @default(now())
+  googleId           String?       @unique
+  status             Boolean       @default(true)
+  createdAt          DateTime      @default(now())
   googleRefreshToken String?
   areaInterna        Area?
   lastActivityAt     DateTime?
   tipoRelacion       TipoRelacion?
-  carpetaDriveCodigo String?          @db.VarChar(50)
+  carpetaDriveCodigo String?       @db.VarChar(50)
 
-  Notificacion       Notificacion[]   @relation("TrabajadorNotificaciones")
-  refreshTokens      RefreshToken[]
-  tareasAsignadas    TareaAsignada[]  @relation("TrabajadorTareas")
-  tareasDefault      TareaPlantilla[] @relation("TareaResponsableDefault")
-  tickets            Ticket[]
+  Notificacion    Notificacion[]   @relation("TrabajadorNotificaciones")
+  refreshTokens   RefreshToken[]
+  tareasAsignadas TareaAsignada[]  @relation("TrabajadorTareas")
+  tareasDefault   TareaPlantilla[] @relation("TareaResponsableDefault")
+  tickets         Ticket[]
 }
 
 model RefreshToken {
@@ -69,11 +69,11 @@ model TareaPlantilla {
   responsableDefaultId Int?
   codigoDocumento      String?
 
-  tareasAsignadas      TareaAsignada[]
-  responsableDefault   Trabajador?     @relation("TareaResponsableDefault", fields: [responsableDefaultId], references: [id_trabajador])
+  tareasAsignadas    TareaAsignada[]
+  responsableDefault Trabajador?     @relation("TareaResponsableDefault", fields: [responsableDefaultId], references: [id_trabajador])
 
   // ✅ nuevo: relación con exclusiones
-  exclusiones          ClienteTareaExclusion[]
+  exclusiones ClienteTareaExclusion[]
 
   @@index([area])
   @@index([responsableDefaultId])
@@ -81,27 +81,27 @@ model TareaPlantilla {
 }
 
 model TareaAsignada {
-  id_tarea_asignada  Int            @id @default(autoincrement())
+  id_tarea_asignada  Int         @id @default(autoincrement())
   tareaPlantillaId   Int
   trabajadorId       Int?
-  estado             EstadoTarea    @default(PENDIENTE)
+  estado             EstadoTarea @default(PENDIENTE)
   fechaProgramada    DateTime
   fechaComplecion    DateTime?
   comentarios        String?
-  createdAt          DateTime       @default(now())
-  updatedAt          DateTime       @updatedAt
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
   rutCliente         String?
-  driveTareaFolderId String?        @db.VarChar(255)
+  driveTareaFolderId String?     @db.VarChar(255)
 
-  Notificacion       Notificacion[] @relation("TareaAsignadaNotificaciones")
+  Notificacion Notificacion[] @relation("TareaAsignadaNotificaciones")
 
-  tareaPlantilla     TareaPlantilla @relation(fields: [tareaPlantillaId], references: [id_tarea_plantilla])
-  asignado           Trabajador?    @relation("TrabajadorTareas", fields: [trabajadorId], references: [id_trabajador])
+  tareaPlantilla TareaPlantilla @relation(fields: [tareaPlantillaId], references: [id_tarea_plantilla])
+  asignado       Trabajador?    @relation("TrabajadorTareas", fields: [trabajadorId], references: [id_trabajador])
 
+  @@unique([tareaPlantillaId, rutCliente, fechaProgramada])
   @@index([trabajadorId])
   @@index([rutCliente])
   @@index([tareaPlantillaId])
-  @@unique([tareaPlantillaId, rutCliente, fechaProgramada])
 }
 
 model Cliente {
@@ -116,32 +116,32 @@ model Cliente {
   codigoCartera String?
 
   // ✅ nuevo: relación con exclusiones
-  exclusiones   ClienteTareaExclusion[]
+  exclusiones ClienteTareaExclusion[]
 
   @@index([agenteId])
   @@index([codigoCartera])
 }
 
 model ClienteTareaExclusion {
-  id              Int      @id @default(autoincrement())
+  id Int @id @default(autoincrement())
 
   // ⚠️ ahora se relaciona al Cliente por rut (único)
   rutCliente       String
   tareaPlantillaId Int
 
   // ✅ opcional: acelera filtros por ejecutivo en UI
-  agenteId         Int?
+  agenteId Int?
 
-  activa           Boolean  @default(true)
-  motivo           String?  @db.VarChar(500)
-  desdeFecha       DateTime?
+  activa     Boolean   @default(true)
+  motivo     String?   @db.VarChar(500)
+  desdeFecha DateTime?
 
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   // ✅ relaciones
-  cliente          Cliente       @relation(fields: [rutCliente], references: [rut])
-  tareaPlantilla   TareaPlantilla @relation(fields: [tareaPlantillaId], references: [id_tarea_plantilla])
+  cliente        Cliente        @relation(fields: [rutCliente], references: [rut])
+  tareaPlantilla TareaPlantilla @relation(fields: [tareaPlantillaId], references: [id_tarea_plantilla])
 
   @@unique([rutCliente, tareaPlantillaId])
   @@index([rutCliente])
@@ -158,12 +158,38 @@ model Notificacion {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  trabajador   Trabajador    @relation("TrabajadorNotificaciones", fields: [trabajadorId], references: [id_trabajador])
-  tarea        TareaAsignada @relation("TareaAsignadaNotificaciones", fields: [tareaId], references: [id_tarea_asignada])
+  trabajador Trabajador    @relation("TrabajadorNotificaciones", fields: [trabajadorId], references: [id_trabajador])
+  tarea      TareaAsignada @relation("TareaAsignadaNotificaciones", fields: [tareaId], references: [id_tarea_asignada])
 }
 
-enum TipoRelacion { CLIENTES PROVEEDORES INTERNO }
-enum Area { CONTA ADMIN RRHH TRIBUTARIO }
-enum Presentacion { CLIENTE INTERNO }
-enum EstadoTarea { PENDIENTE EN_PROCESO VENCIDA COMPLETADA NO_APLICA }
-enum FrecuenciaTarea { MENSUAL SEMANAL UNICA }
+enum TipoRelacion {
+  CLIENTES
+  PROVEEDORES
+  INTERNO
+}
+
+enum Area {
+  CONTA
+  ADMIN
+  RRHH
+  TRIBUTARIO
+}
+
+enum Presentacion {
+  CLIENTE
+  INTERNO
+}
+
+enum EstadoTarea {
+  PENDIENTE
+  EN_PROCESO
+  VENCIDA
+  COMPLETADA
+  NO_APLICA
+}
+
+enum FrecuenciaTarea {
+  MENSUAL
+  SEMANAL
+  UNICA
+}
