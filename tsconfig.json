@@ -2,19 +2,20 @@
   "compilerOptions": {
     "target": "ES2020",
     "module": "commonjs",
-    "rootDir": "src",            // 👈 ahora solo compila lo de /src
-    "outDir": "./dist",          // 👈 genera dist/server.js, dist/app.js, etc.
+    "rootDir": "src",
+    "outDir": "./dist",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
   "include": [
-    "src/**/*.ts"                // 👈 solo código de la app
+    "src/**/*.ts"
   ],
   "exclude": [
     "node_modules",
     "dist",
-    "prisma"                     // 👈 los seeds los ejecutas con ts-node/tsx
+    "prisma",
+    "src/scripts/**"
   ]
 }
