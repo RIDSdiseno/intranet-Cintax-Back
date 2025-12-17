@@ -280,45 +280,82 @@ exports.getTareasPorPlantilla = getTareasPorPlantilla;
 //    POST /tareas/bulk-desde-plantilla
 // ---------------------------------------------------------------------------
 const crearTareasDesdePlantilla = async (req, res) => {
-    try {
-        const { tareaPlantillaId, rutClientes, fechaProgramada, asignarAId } = req.body;
-        if (!tareaPlantillaId || !rutClientes?.length) {
-            return res.status(400).json({
-                message: "tareaPlantillaId y rutClientes son obligatorios",
-            });
-        }
-        const plantilla = await prisma_1.prisma.tareaPlantilla.findUnique({
-            where: { id_tarea_plantilla: tareaPlantillaId },
-        });
-        if (!plantilla) {
-            return res.status(404).json({ message: "Plantilla no encontrada" });
-        }
-        const fecha = fechaProgramada ? new Date(fechaProgramada) : new Date();
-        const trabajadorAsignadoId = asignarAId ?? plantilla.responsableDefaultId ?? null;
-        const dataToCreate = rutClientes.map((rut) => ({
-            tareaPlantillaId,
-            rutCliente: rut,
-            trabajadorId: trabajadorAsignadoId,
-            estado: "PENDIENTE",
-            fechaProgramada: fecha,
-        }));
-        const resultado = await prisma_1.prisma.tareaAsignada.createMany({
-            data: dataToCreate,
-            skipDuplicates: true,
-        });
-        return res.status(201).json({
-            message: "Tareas creadas correctamente",
-            count: resultado.count,
-        });
+  try {
+    const { tareaPlantillaId, rutClientes, fechaProgramada, asignarAId } =
+      req.body;
+
+    if (!tareaPlantillaId || !rutClientes?.length) {
+      return res.status(400).json({
+        message: "tareaPlantillaId y rutClientes son obligatorios",
+      });
     }
-    catch (error) {
-        console.error("[crearTareasDesdePlantilla] error:", error);
-        return res
-            .status(500)
-            .json({ message: "Error creando tareas masivas" });
+
+    const plantilla = await prisma_1.prisma.tareaPlantilla.findUnique({
+      where: { id_tarea_plantilla: Number(tareaPlantillaId) },
+      select: { id_tarea_plantilla: true, responsableDefaultId: true },
+    });
+
+    if (!plantilla) {
+      return res.status(404).json({ message: "Plantilla no encontrada" });
     }
+
+    const fecha = fechaProgramada ? new Date(fechaProgramada) : new Date();
+
+    // Responsable final
+    const trabajadorAsignadoId =
+      asignarAId ?? plantilla.responsableDefaultId ?? null;
+
+    // Normaliza RUTs (trim + únicos)
+    const ruts = Array.from(
+      new Set((rutClientes || []).map((r) => String(r).trim()).filter(Boolean))
+    );
+
+    if (ruts.length === 0) {
+      return res.status(400).json({ message: "rutClientes está vacío" });
+    }
+
+    const dataToCreate = ruts.map((rut) => ({
+      tareaPlantillaId: Number(tareaPlantillaId),
+      rutCliente: rut,
+      trabajadorId: trabajadorAsignadoId,
+      estado: "PENDIENTE",
+      fechaProgramada: fecha,
+    }));
+
+    // ✅ Transacción: asigna cliente al ejecutivo (si aplica) + crea tareas
+    const resultado = await prisma_1.prisma.$transaction(async (tx) => {
+      // 1) Si hay ejecutivo/responsable, asegura que el cliente quede asignado (solo si estaba NULL)
+      if (trabajadorAsignadoId) {
+        await tx.cliente.updateMany({
+          where: {
+            rut: { in: ruts },
+            agenteId: null,
+          },
+          data: { agenteId: Number(trabajadorAsignadoId) },
+        });
+      }
+
+      // 2) Crea tareas (evita duplicados con skipDuplicates)
+      return tx.tareaAsignada.createMany({
+        data: dataToCreate,
+        skipDuplicates: true,
+      });
+    });
+
+    return res.status(201).json({
+      message: "Tareas creadas correctamente",
+      count: resultado.count,
+      responsableId: trabajadorAsignadoId,
+      rutClientes: ruts.length,
+    });
+  } catch (error) {
+    console.error("[crearTareasDesdePlantilla] error:", error);
+    return res.status(500).json({ message: "Error creando tareas masivas" });
+  }
 };
+
 exports.crearTareasDesdePlantilla = crearTareasDesdePlantilla;
+
 // ---------------------------------------------------------------------------
 // 6) Actualizar estado (COMPLETADA → crear siguiente período)
 //    PATCH /tareas/:id/estado

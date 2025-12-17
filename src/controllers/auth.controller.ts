@@ -1688,7 +1688,7 @@ export const listTareasAsignadas = async (req: Request, res: Response) => {
       const estadoFront = mapEstadoFront(ta.estado, ta.fechaProgramada);
 
       bucket.tareas.push({
-        id: String(ta.id_tarea_asignada),
+        id: String (ta.id_tarea_asignada),
         nombre: ta.tareaPlantilla?.nombre ?? "Tarea sin nombre",
         vencimiento: ta.fechaProgramada.toISOString(),
         estado: estadoFront,

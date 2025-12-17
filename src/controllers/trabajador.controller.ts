@@ -1,10 +1,5 @@
 import { Request, Response } from "express";
-import {
-  PrismaClient,
-  Area,
-  EstadoTarea,
-  TipoRelacion,
-} from "@prisma/client";
+import { PrismaClient, Area, EstadoTarea, TipoRelacion } from "@prisma/client";
 
 const prisma = new PrismaClient();
 
@@ -12,6 +7,21 @@ const prisma = new PrismaClient();
 type FrontCategoria = "Contabilidad" | "Tributario" | "Entre otros";
 type FrontArea = "Clientes" | "Proveedores" | "Interno";
 type FrontEstado = "Activo" | "Inactivo";
+
+type TrabajadorFront = {
+  id: number; // compat
+  id_trabajador: number; // ✅ para tu select del front
+  nombre: string;
+  email: string;
+  rol: string;
+  area: FrontArea;
+  categoria: FrontCategoria;
+  estado: FrontEstado;
+  activo: boolean;
+  ultimoLogin: Date | null;
+  proyectosActivos: number;
+  areaInterna: Area | null;
+};
 
 const mapCategoriaFromArea = (area: Area | null): FrontCategoria => {
   switch (area) {
@@ -55,7 +65,7 @@ export const listTrabajadores = async (req: Request, res: Response) => {
       search?: string;
       categoria?: string;
       area?: string;
-      estado?: "Activo" | "Inactivo";
+      estado?: FrontEstado;
     };
 
     const trabajadores = await prisma.trabajador.findMany({
@@ -68,15 +78,13 @@ export const listTrabajadores = async (req: Request, res: Response) => {
         status: true,
         lastActivityAt: true,
         tareasAsignadas: {
-          select: {
-            estado: true,
-          },
+          select: { estado: true },
         },
       },
       orderBy: { nombre: "asc" },
     });
 
-    let personas = trabajadores.map((t) => {
+    let personas: TrabajadorFront[] = trabajadores.map((t) => {
       const categoriaFront = mapCategoriaFromArea(t.areaInterna ?? null);
       const areaFront = mapAreaFromTipoRelacion(t.tipoRelacion ?? null);
       const estadoFront: FrontEstado = t.status ? "Activo" : "Inactivo";
@@ -89,17 +97,18 @@ export const listTrabajadores = async (req: Request, res: Response) => {
       ).length;
 
       return {
-        id: t.id_trabajador,
+        id: t.id_trabajador,                 // compat
+        id_trabajador: t.id_trabajador,      // ✅ para front
         nombre: t.nombre,
         email: t.email,
         rol: rolFront,
-        area: areaFront,              // Área “humana”
-        categoria: categoriaFront,    // Contabilidad / Tributario / Entre otros
+        area: areaFront,
+        categoria: categoriaFront,
         estado: estadoFront,
         activo: t.status,
-        ultimoLogin: t.lastActivityAt,
+        ultimoLogin: t.lastActivityAt ?? null,
         proyectosActivos,
-        areaInterna: t.areaInterna ?? null, // 👈 ENUM crudo: CONTA, TRIBUTARIO, etc.
+        areaInterna: t.areaInterna ?? null,
       };
     });
 
@@ -136,7 +145,6 @@ export const listTrabajadores = async (req: Request, res: Response) => {
       );
     }
 
-    // Devolvemos directamente el array
     return res.json(personas);
   } catch (err) {
     console.error("listTrabajadores error:", err);

@@ -19,18 +19,14 @@ model Trabajador {
   areaInterna        Area?
   lastActivityAt     DateTime?
   tipoRelacion       TipoRelacion?
-  /// Código de carpeta en Drive dentro del área (ej: "A01", "A02")
   carpetaDriveCodigo String?          @db.VarChar(50)
 
-  /// 🔔 Relación 1-N a Notificacion
   Notificacion       Notificacion[]   @relation("TrabajadorNotificaciones")
-
   refreshTokens      RefreshToken[]
   tareasAsignadas    TareaAsignada[]  @relation("TrabajadorTareas")
   tareasDefault      TareaPlantilla[] @relation("TareaResponsableDefault")
   tickets            Ticket[]
 }
-
 
 model RefreshToken {
   id           Int        @id @default(autoincrement())
@@ -68,14 +64,20 @@ model TareaPlantilla {
   diaSemanaVencimiento Int?
   presentacion         Presentacion
   activo               Boolean         @default(true)
+  requiereDrive        Boolean         @default(true)
+
   responsableDefaultId Int?
-  /// Código corto del documento/tarea (ej: "F29", "F50", etc.)
   codigoDocumento      String?
+
   tareasAsignadas      TareaAsignada[]
   responsableDefault   Trabajador?     @relation("TareaResponsableDefault", fields: [responsableDefaultId], references: [id_trabajador])
 
+  // ✅ nuevo: relación con exclusiones
+  exclusiones          ClienteTareaExclusion[]
+
   @@index([area])
   @@index([responsableDefaultId])
+  @@index([activo])
 }
 
 model TareaAsignada {
@@ -88,12 +90,9 @@ model TareaAsignada {
   comentarios        String?
   createdAt          DateTime       @default(now())
   updatedAt          DateTime       @updatedAt
-  /// RUT del cliente al que aplica esta tarea (ej: "76.123.456-7")
   rutCliente         String?
-  /// Carpeta "TAREA" en Drive para esta tarea (CINTAX/YEAR/CONTA/A0X/RUT/MES/NOMBRE/TAREA)
   driveTareaFolderId String?        @db.VarChar(255)
 
-  /// 🔔 Relación 1-N a Notificacion
   Notificacion       Notificacion[] @relation("TareaAsignadaNotificaciones")
 
   tareaPlantilla     TareaPlantilla @relation(fields: [tareaPlantillaId], references: [id_tarea_plantilla])
@@ -102,13 +101,12 @@ model TareaAsignada {
   @@index([trabajadorId])
   @@index([rutCliente])
   @@index([tareaPlantillaId])
+  @@unique([tareaPlantillaId, rutCliente, fechaProgramada])
 }
 
-
-/// CLIENTES, con RUT y razón social, ligados a un ejecutivo (A01, etc.)
 model Cliente {
   id            Int      @id @default(autoincrement())
-  rut           String
+  rut           String   @unique
   razonSocial   String
   alias         String?
   activo        Boolean  @default(true)
@@ -117,9 +115,38 @@ model Cliente {
   agenteId      Int?
   codigoCartera String?
 
-  @@unique([rut, razonSocial])
+  // ✅ nuevo: relación con exclusiones
+  exclusiones   ClienteTareaExclusion[]
+
   @@index([agenteId])
   @@index([codigoCartera])
+}
+
+model ClienteTareaExclusion {
+  id              Int      @id @default(autoincrement())
+
+  // ⚠️ ahora se relaciona al Cliente por rut (único)
+  rutCliente       String
+  tareaPlantillaId Int
+
+  // ✅ opcional: acelera filtros por ejecutivo en UI
+  agenteId         Int?
+
+  activa           Boolean  @default(true)
+  motivo           String?  @db.VarChar(500)
+  desdeFecha       DateTime?
+
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  // ✅ relaciones
+  cliente          Cliente       @relation(fields: [rutCliente], references: [rut])
+  tareaPlantilla   TareaPlantilla @relation(fields: [tareaPlantillaId], references: [id_tarea_plantilla])
+
+  @@unique([rutCliente, tareaPlantillaId])
+  @@index([rutCliente])
+  @@index([tareaPlantillaId])
+  @@index([agenteId])
 }
 
 model Notificacion {
@@ -131,42 +158,12 @@ model Notificacion {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  /// 🔙 Relación hacia Trabajador (muchas notificaciones → 1 trabajador)
   trabajador   Trabajador    @relation("TrabajadorNotificaciones", fields: [trabajadorId], references: [id_trabajador])
-
-  /// 🔙 Relación hacia TareaAsignada (muchas notificaciones → 1 tarea)
   tarea        TareaAsignada @relation("TareaAsignadaNotificaciones", fields: [tareaId], references: [id_tarea_asignada])
 }
 
-
-
-enum TipoRelacion {
-  CLIENTES
-  PROVEEDORES
-  INTERNO
-}
-
-enum Area {
-  CONTA
-  ADMIN
-  RRHH
-  TRIBUTARIO
-}
-
-enum Presentacion {
-  CLIENTE
-  INTERNO
-}
-
-enum EstadoTarea {
-  PENDIENTE
-  EN_PROCESO
-  COMPLETADA
-  VENCIDA
-}
-
-enum FrecuenciaTarea {
-  MENSUAL
-  SEMANAL
-  UNICA
-}
+enum TipoRelacion { CLIENTES PROVEEDORES INTERNO }
+enum Area { CONTA ADMIN RRHH TRIBUTARIO }
+enum Presentacion { CLIENTE INTERNO }
+enum EstadoTarea { PENDIENTE EN_PROCESO VENCIDA COMPLETADA NO_APLICA }
+enum FrecuenciaTarea { MENSUAL SEMANAL UNICA }
