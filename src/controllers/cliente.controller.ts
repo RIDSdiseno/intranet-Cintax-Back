@@ -14,6 +14,50 @@ function parseIdParam(req: Request): number | null {
   return id;
 }
 
+function isPrivileged(req: Request): boolean {
+  const role = (req as any).user?.role as "ADMIN" | "SUPERVISOR" | "AGENTE" | undefined;
+  return role === "ADMIN" || role === "SUPERVISOR";
+}
+
+function isAdmin(req: Request): boolean {
+  const role = (req as any).user?.role as "ADMIN" | "SUPERVISOR" | "AGENTE" | undefined;
+  return role === "ADMIN";
+}
+
+async function ensureAgenteExists(agenteId: number) {
+  // Ajusta el modelo si no se llama "trabajador"
+  const agente = await prisma.trabajador.findUnique({
+    where: { id_trabajador: agenteId },
+    select: { id_trabajador: true, nombre: true, email: true, status: true },
+  });
+
+  if (!agente) return { ok: false as const, error: "Agente no existe" };
+  if (!agente.status) return { ok: false as const, error: "Agente está inactivo" };
+
+  return { ok: true as const, agente };
+}
+
+function asTrimmedString(v: unknown): string | undefined {
+  if (v === null || v === undefined) return undefined;
+  const s = String(v).trim();
+  return s.length ? s : undefined;
+}
+
+function asNullableTrimmedString(v: unknown): string | null | undefined {
+  if (v === undefined) return undefined; // no viene => no tocar
+  if (v === null) return null; // viene null => set null
+  const s = String(v).trim();
+  return s.length ? s : null; // viene "" => null
+}
+
+function parseNullableNumber(v: unknown): number | null | undefined {
+  if (v === undefined) return undefined; // no viene => no tocar
+  if (v === null || v === "") return null; // viene vacío => null
+  const n = Number(v);
+  if (!Number.isFinite(n)) return NaN; // marcador de inválido
+  return n;
+}
+
 /**
  * GET /api/clientes
  *
@@ -23,24 +67,23 @@ function parseIdParam(req: Request): number | null {
  *  - agenteId?: number    -> filtra por id del ejecutivo
  *  - soloActivos?: "true" -> solo clientes activos
  *  - limit?: number       -> máximo de registros (default 200)
+ *  - skip?: number        -> offset (para paginación)
  */
 export const listClientes = async (req: Request, res: Response) => {
   try {
-    const { search, cartera, agenteId, soloActivos, limit } = req.query as {
+    const { search, cartera, agenteId, soloActivos, limit, skip } = req.query as {
       search?: string;
       cartera?: string;
       agenteId?: string;
       soloActivos?: string;
       limit?: string;
+      skip?: string;
     };
 
     const where: Prisma.ClienteWhereInput = {};
 
     if (soloActivos === "true") where.activo = true;
-
-    if (cartera && cartera.trim() !== "") {
-      where.codigoCartera = cartera.trim();
-    }
+    if (cartera && cartera.trim() !== "") where.codigoCartera = cartera.trim();
 
     if (agenteId) {
       const parsed = Number(agenteId);
@@ -52,30 +95,36 @@ export const listClientes = async (req: Request, res: Response) => {
       where.OR = [
         { rut: { contains: q, mode: "insensitive" } },
         { razonSocial: { contains: q, mode: "insensitive" } },
+        { alias: { contains: q, mode: "insensitive" } },
       ];
     }
 
-    const take = limit && !Number.isNaN(Number(limit)) ? Number(limit) : 200;
+    const take =
+      limit && !Number.isNaN(Number(limit)) ? Math.min(Number(limit), 1000) : 200;
+    const sk = skip && !Number.isNaN(Number(skip)) ? Math.max(0, Number(skip)) : 0;
 
-    const clientes = await prisma.cliente.findMany({
-      where,
-      orderBy: [{ razonSocial: "asc" }, { rut: "asc" }],
-      take,
-      select: {
-        id: true,
-        rut: true,
-        razonSocial: true,
-        alias: true,
-        codigoCartera: true,
-        agenteId: true,
-        activo: true,
-        createdAt: true,
-        updatedAt: true,
-      },
-    });
+    const [clientes, total] = await Promise.all([
+      prisma.cliente.findMany({
+        where,
+        orderBy: [{ razonSocial: "asc" }, { rut: "asc" }],
+        take,
+        skip: sk,
+        select: {
+          id: true,
+          rut: true,
+          razonSocial: true,
+          alias: true,
+          codigoCartera: true,
+          agenteId: true,
+          activo: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      }),
+      prisma.cliente.count({ where }),
+    ]);
 
-    // ✅ devolvemos array directo
-    return res.json(clientes);
+    return res.json({ items: clientes, total, take, skip: sk });
   } catch (err) {
     console.error("listClientes error:", err);
     return res.status(500).json({ error: "Error interno listando clientes" });
@@ -116,9 +165,16 @@ export const getClienteById = async (req: Request, res: Response) => {
 /**
  * POST /api/clientes
  * body: { rut, razonSocial, alias?, codigoCartera?, agenteId?, activo? }
+ *
+ * ✅ Regla sugerida:
+ * - ADMIN / SUPERVISOR: puede crear y asignar agenteId
  */
 export const createCliente = async (req: Request, res: Response) => {
   try {
+    if (!isPrivileged(req)) {
+      return res.status(403).json({ error: "Sin permisos (solo admin/supervisor)" });
+    }
+
     const body = req.body as {
       rut?: string;
       razonSocial?: string;
@@ -144,7 +200,11 @@ export const createCliente = async (req: Request, res: Response) => {
       return res.status(400).json({ error: "agenteId inválido" });
     }
 
-    // Si rut es unique en BD, esto te protege de duplicados por carrera
+    if (agenteId !== null) {
+      const chk = await ensureAgenteExists(agenteId);
+      if (!chk.ok) return res.status(400).json({ error: chk.error });
+    }
+
     const exists = await prisma.cliente.findFirst({ where: { rut } });
     if (exists) return res.status(409).json({ error: "Ya existe un cliente con ese RUT" });
 
@@ -173,12 +233,9 @@ export const createCliente = async (req: Request, res: Response) => {
     return res.status(201).json(created);
   } catch (err: any) {
     console.error("createCliente error:", err);
-
-    // Prisma unique violation
     if (err?.code === "P2002") {
       return res.status(409).json({ error: "Cliente duplicado (unique constraint)" });
     }
-
     return res.status(500).json({ error: "Error interno creando cliente" });
   }
 };
@@ -186,11 +243,19 @@ export const createCliente = async (req: Request, res: Response) => {
 /**
  * PATCH /api/clientes/:id
  * body: { rut?, razonSocial?, alias?, codigoCartera?, agenteId?, activo? }
+ *
+ * ✅ Permisos:
+ * - ADMIN/SUPERVISOR: puede editar todo (incluye agenteId)
+ * - AGENTE: puede editar SOLO alias / codigoCartera (si quieres) y NO puede tocar agenteId ni activo.
+ *
+ * Ajusta la whitelist según tu regla real.
  */
 export const updateCliente = async (req: Request, res: Response) => {
   try {
     const id = parseIdParam(req);
     if (!id) return res.status(400).json({ error: "ID inválido" });
+
+    const role = (req as any).user?.role as "ADMIN" | "SUPERVISOR" | "AGENTE" | undefined;
 
     const body = req.body as {
       rut?: string;
@@ -201,35 +266,77 @@ export const updateCliente = async (req: Request, res: Response) => {
       activo?: boolean;
     };
 
-    // armar data parcial
     const data: Prisma.ClienteUpdateInput = {};
 
-    if (body.rut !== undefined) {
-      const rut = String(body.rut).trim();
+    // ---- Campos "sensibles" (rut/razonSocial/activo/agenteId) ----
+    const wantsRut = body.rut !== undefined;
+    const wantsRazon = body.razonSocial !== undefined;
+    const wantsActivo = body.activo !== undefined;
+    const wantsAgenteId = body.agenteId !== undefined;
+
+    const isPriv = isPrivileged(req);
+
+    // Si es AGENTE, bloquea cambios sensibles (puedes ajustar esta regla)
+    if (!isPriv && (wantsRut || wantsRazon || wantsActivo || wantsAgenteId)) {
+      return res.status(403).json({
+        error:
+          "Sin permisos para modificar rut/razonSocial/activo/agenteId (solo admin/supervisor)",
+      });
+    }
+
+    // rut
+    if (wantsRut) {
+      const rut = asTrimmedString(body.rut);
       if (!rut) return res.status(400).json({ error: "rut no puede ser vacío" });
       data.rut = rut;
     }
 
-    if (body.razonSocial !== undefined) {
-      const rs = String(body.razonSocial).trim();
+    // razonSocial
+    if (wantsRazon) {
+      const rs = asTrimmedString(body.razonSocial);
       if (!rs) return res.status(400).json({ error: "razonSocial no puede ser vacío" });
       data.razonSocial = rs;
     }
 
-    if (body.alias !== undefined) data.alias = body.alias ?? null;
-    if (body.codigoCartera !== undefined) data.codigoCartera = body.codigoCartera ?? null;
+    // alias / codigoCartera (permitidos para todos por defecto)
+    const alias = asNullableTrimmedString(body.alias);
+    if (alias !== undefined) data.alias = alias;
 
-    if (body.agenteId !== undefined) {
-      if (body.agenteId === null || body.agenteId === "") {
+    const codigoCartera = asNullableTrimmedString(body.codigoCartera);
+    if (codigoCartera !== undefined) data.codigoCartera = codigoCartera;
+
+    // agenteId (solo priv)
+    if (wantsAgenteId) {
+      if (!isPriv) {
+        return res.status(403).json({ error: "Sin permisos para reasignar agente" });
+      }
+
+      const parsed = parseNullableNumber(body.agenteId);
+
+      if (parsed === (NaN as any)) return res.status(400).json({ error: "agenteId inválido" });
+      if (parsed === null) {
         data.agenteId = null;
-      } else {
-        const parsed = Number(body.agenteId);
-        if (Number.isNaN(parsed)) return res.status(400).json({ error: "agenteId inválido" });
+      } else if (typeof parsed === "number") {
+        const chk = await ensureAgenteExists(parsed);
+        if (!chk.ok) return res.status(400).json({ error: chk.error });
         data.agenteId = parsed;
       }
     }
 
-    if (body.activo !== undefined) data.activo = Boolean(body.activo);
+    // activo (solo priv)
+    if (wantsActivo) {
+      if (!isPriv) {
+        return res
+          .status(403)
+          .json({ error: "Sin permisos para cambiar estado (solo admin/supervisor)" });
+      }
+      data.activo = Boolean(body.activo);
+    }
+
+    // nada que actualizar
+    if (Object.keys(data).length === 0) {
+      return res.status(400).json({ error: "No hay campos válidos para actualizar" });
+    }
 
     const updated = await prisma.cliente.update({
       where: { id },
@@ -250,24 +357,119 @@ export const updateCliente = async (req: Request, res: Response) => {
     return res.json(updated);
   } catch (err: any) {
     console.error("updateCliente error:", err);
-
-    if (err?.code === "P2025") {
-      return res.status(404).json({ error: "Cliente no encontrado" });
-    }
-    if (err?.code === "P2002") {
+    if (err?.code === "P2025") return res.status(404).json({ error: "Cliente no encontrado" });
+    if (err?.code === "P2002")
       return res.status(409).json({ error: "rut duplicado (unique constraint)" });
-    }
-
     return res.status(500).json({ error: "Error interno actualizando cliente" });
   }
 };
 
 /**
+ * PATCH /api/clientes/:id/asignar-agente
+ * body: { agenteId: number | null }
+ *
+ * ✅ endpoint explícito para reasignar (admin/supervisor)
+ */
+export const assignAgenteToCliente = async (req: Request, res: Response) => {
+  try {
+    if (!isPrivileged(req)) {
+      return res.status(403).json({ error: "Sin permisos (solo admin/supervisor)" });
+    }
+
+    const id = parseIdParam(req);
+    if (!id) return res.status(400).json({ error: "ID inválido" });
+
+    const { agenteId } = req.body as { agenteId?: number | null };
+
+    if (agenteId !== null && agenteId !== undefined) {
+      if (typeof agenteId !== "number" || Number.isNaN(agenteId)) {
+        return res.status(400).json({ error: "agenteId inválido" });
+      }
+      const chk = await ensureAgenteExists(agenteId);
+      if (!chk.ok) return res.status(400).json({ error: chk.error });
+    }
+
+    const updated = await prisma.cliente.update({
+      where: { id },
+      data: { agenteId: agenteId ?? null },
+      select: {
+        id: true,
+        rut: true,
+        razonSocial: true,
+        alias: true,
+        codigoCartera: true,
+        agenteId: true,
+        activo: true,
+        updatedAt: true,
+      },
+    });
+
+    return res.json(updated);
+  } catch (err: any) {
+    console.error("assignAgenteToCliente error:", err);
+    if (err?.code === "P2025") return res.status(404).json({ error: "Cliente no encontrado" });
+    return res.status(500).json({ error: "Error interno reasignando agente" });
+  }
+};
+
+/**
+ * PATCH /api/clientes/reasignar-masivo
+ * body: { clienteIds: number[], agenteId: number | null }
+ *
+ * ✅ reasignación masiva (admin/supervisor)
+ */
+export const bulkAssignAgente = async (req: Request, res: Response) => {
+  try {
+    if (!isPrivileged(req)) {
+      return res.status(403).json({ error: "Sin permisos (solo admin/supervisor)" });
+    }
+
+    const { clienteIds, agenteId } = req.body as {
+      clienteIds?: number[];
+      agenteId?: number | null;
+    };
+
+    if (!Array.isArray(clienteIds) || clienteIds.length === 0) {
+      return res.status(400).json({ error: "clienteIds debe ser un array con elementos" });
+    }
+
+    const ids = clienteIds.map(Number).filter((n) => Number.isFinite(n));
+    if (ids.length !== clienteIds.length) {
+      return res.status(400).json({ error: "clienteIds contiene valores inválidos" });
+    }
+
+    if (agenteId !== null && agenteId !== undefined) {
+      if (typeof agenteId !== "number" || Number.isNaN(agenteId)) {
+        return res.status(400).json({ error: "agenteId inválido" });
+      }
+      const chk = await ensureAgenteExists(agenteId);
+      if (!chk.ok) return res.status(400).json({ error: chk.error });
+    }
+
+    const result = await prisma.cliente.updateMany({
+      where: { id: { in: ids } },
+      data: { agenteId: agenteId ?? null },
+    });
+
+    return res.json({ updatedCount: result.count });
+  } catch (err) {
+    console.error("bulkAssignAgente error:", err);
+    return res.status(500).json({ error: "Error interno reasignando masivo" });
+  }
+};
+
+/**
  * DELETE /api/clientes/:id
- * (Hard delete. Si prefieres soft delete, usa setClienteActivo)
+ * (Hard delete)
+ *
+ * ✅ Solo ADMIN
  */
 export const deleteCliente = async (req: Request, res: Response) => {
   try {
+    if (!isAdmin(req)) {
+      return res.status(403).json({ error: "Solo ADMIN puede eliminar clientes" });
+    }
+
     const id = parseIdParam(req);
     if (!id) return res.status(400).json({ error: "ID inválido" });
 
@@ -275,11 +477,7 @@ export const deleteCliente = async (req: Request, res: Response) => {
     return res.status(204).send();
   } catch (err: any) {
     console.error("deleteCliente error:", err);
-
-    if (err?.code === "P2025") {
-      return res.status(404).json({ error: "Cliente no encontrado" });
-    }
-
+    if (err?.code === "P2025") return res.status(404).json({ error: "Cliente no encontrado" });
     return res.status(500).json({ error: "Error interno eliminando cliente" });
   }
 };
@@ -287,14 +485,19 @@ export const deleteCliente = async (req: Request, res: Response) => {
 /**
  * PATCH /api/clientes/:id/estado
  * body: { activo: boolean }
+ *
+ * ✅ admin/supervisor
  */
 export const setClienteActivo = async (req: Request, res: Response) => {
   try {
+    if (!isPrivileged(req)) {
+      return res.status(403).json({ error: "Sin permisos (solo admin/supervisor)" });
+    }
+
     const id = parseIdParam(req);
     if (!id) return res.status(400).json({ error: "ID inválido" });
 
     const { activo } = req.body as { activo?: boolean };
-
     if (typeof activo !== "boolean") {
       return res.status(400).json({ error: "activo debe ser boolean" });
     }
@@ -310,7 +513,6 @@ export const setClienteActivo = async (req: Request, res: Response) => {
         codigoCartera: true,
         agenteId: true,
         activo: true,
-        createdAt: true,
         updatedAt: true,
       },
     });
@@ -318,11 +520,7 @@ export const setClienteActivo = async (req: Request, res: Response) => {
     return res.json(updated);
   } catch (err: any) {
     console.error("setClienteActivo error:", err);
-
-    if (err?.code === "P2025") {
-      return res.status(404).json({ error: "Cliente no encontrado" });
-    }
-
+    if (err?.code === "P2025") return res.status(404).json({ error: "Cliente no encontrado" });
     return res.status(500).json({ error: "Error interno cambiando estado" });
   }
 };

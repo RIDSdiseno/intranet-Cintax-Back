@@ -8,24 +8,24 @@ datasource db {
 }
 
 model Trabajador {
-  id_trabajador      Int           @id @default(autoincrement())
+  id_trabajador      Int              @id @default(autoincrement())
   nombre             String
-  email              String        @unique
+  email              String           @unique
   passwordHash       String?
-  googleId           String?       @unique
-  status             Boolean       @default(true)
-  createdAt          DateTime      @default(now())
+  googleId           String?          @unique
+  status             Boolean          @default(true)
+  createdAt          DateTime         @default(now())
   googleRefreshToken String?
   areaInterna        Area?
   lastActivityAt     DateTime?
   tipoRelacion       TipoRelacion?
-  carpetaDriveCodigo String?       @db.VarChar(50)
+  carpetaDriveCodigo String?          @db.VarChar(50)
 
-  Notificacion    Notificacion[]   @relation("TrabajadorNotificaciones")
-  refreshTokens   RefreshToken[]
-  tareasAsignadas TareaAsignada[]  @relation("TrabajadorTareas")
-  tareasDefault   TareaPlantilla[] @relation("TareaResponsableDefault")
-  tickets         Ticket[]
+  Notificacion       Notificacion[]   @relation("TrabajadorNotificaciones")
+  refreshTokens      RefreshToken[]
+  tareasAsignadas    TareaAsignada[]  @relation("TrabajadorTareas")
+  tareasDefault      TareaPlantilla[] @relation("TareaResponsableDefault")
+  tickets            Ticket[]
 }
 
 model RefreshToken {
@@ -49,6 +49,7 @@ model Ticket {
   trabajadorId   Int?
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @updatedAt
+
   trabajador     Trabajador? @relation(fields: [trabajadorId], references: [id_trabajador])
 }
 
@@ -64,40 +65,38 @@ model TareaPlantilla {
   diaSemanaVencimiento Int?
   presentacion         Presentacion
   activo               Boolean         @default(true)
-  requiereDrive        Boolean         @default(true)
-
   responsableDefaultId Int?
   codigoDocumento      String?
+  requiereDrive        Boolean         @default(true)
 
-  tareasAsignadas    TareaAsignada[]
-  responsableDefault Trabajador?     @relation("TareaResponsableDefault", fields: [responsableDefaultId], references: [id_trabajador])
+  tareasAsignadas      TareaAsignada[]
+  responsableDefault   Trabajador?     @relation("TareaResponsableDefault", fields: [responsableDefaultId], references: [id_trabajador])
 
-  // ✅ nuevo: relación con exclusiones
-  exclusiones ClienteTareaExclusion[]
+  // ✅ relación con exclusiones
+  exclusiones          ClienteTareaExclusion[]
 
   @@index([area])
   @@index([responsableDefaultId])
-  @@index([activo])
 }
 
 model TareaAsignada {
-  id_tarea_asignada  Int         @id @default(autoincrement())
+  id_tarea_asignada  Int            @id @default(autoincrement())
   tareaPlantillaId   Int
   trabajadorId       Int?
-  estado             EstadoTarea @default(PENDIENTE)
+  estado             EstadoTarea    @default(PENDIENTE)
   fechaProgramada    DateTime
   fechaComplecion    DateTime?
   comentarios        String?
-  createdAt          DateTime    @default(now())
-  updatedAt          DateTime    @updatedAt
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
   rutCliente         String?
-  driveTareaFolderId String?     @db.VarChar(255)
+  driveTareaFolderId String?        @db.VarChar(255)
 
-  Notificacion Notificacion[] @relation("TareaAsignadaNotificaciones")
+  Notificacion       Notificacion[] @relation("TareaAsignadaNotificaciones")
+  tareaPlantilla     TareaPlantilla @relation(fields: [tareaPlantillaId], references: [id_tarea_plantilla])
+  asignado           Trabajador?    @relation("TrabajadorTareas", fields: [trabajadorId], references: [id_trabajador])
 
-  tareaPlantilla TareaPlantilla @relation(fields: [tareaPlantillaId], references: [id_tarea_plantilla])
-  asignado       Trabajador?    @relation("TrabajadorTareas", fields: [trabajadorId], references: [id_trabajador])
-
+  // ✅ evita duplicar la misma tarea para el mismo cliente y misma fecha
   @@unique([tareaPlantillaId, rutCliente, fechaProgramada])
   @@index([trabajadorId])
   @@index([rutCliente])
@@ -106,7 +105,10 @@ model TareaAsignada {
 
 model Cliente {
   id            Int      @id @default(autoincrement())
+
+  // ✅ CLAVE NATURAL: RUT único (permite upsert y FK lógica)
   rut           String   @unique
+
   razonSocial   String
   alias         String?
   activo        Boolean  @default(true)
@@ -115,51 +117,46 @@ model Cliente {
   agenteId      Int?
   codigoCartera String?
 
-  // ✅ nuevo: relación con exclusiones
-  exclusiones ClienteTareaExclusion[]
+  // ✅ relación con exclusiones por rut
+  exclusiones   ClienteTareaExclusion[]
 
   @@index([agenteId])
   @@index([codigoCartera])
 }
 
 model ClienteTareaExclusion {
-  id Int @id @default(autoincrement())
+  id               Int       @id @default(autoincrement())
 
-  // ⚠️ ahora se relaciona al Cliente por rut (único)
+  // FK lógica hacia Cliente.rut (que ahora es @unique)
   rutCliente       String
   tareaPlantillaId Int
 
-  // ✅ opcional: acelera filtros por ejecutivo en UI
-  agenteId Int?
-
-  activa     Boolean   @default(true)
-  motivo     String?   @db.VarChar(500)
-  desdeFecha DateTime?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  activa           Boolean   @default(true)
+  motivo           String?   @db.VarChar(500)
+  desdeFecha       DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
   // ✅ relaciones
-  cliente        Cliente        @relation(fields: [rutCliente], references: [rut])
-  tareaPlantilla TareaPlantilla @relation(fields: [tareaPlantillaId], references: [id_tarea_plantilla])
+  cliente          Cliente        @relation(fields: [rutCliente], references: [rut], onDelete: Cascade)
+  tareaPlantilla   TareaPlantilla @relation(fields: [tareaPlantillaId], references: [id_tarea_plantilla], onDelete: Cascade)
 
   @@unique([rutCliente, tareaPlantillaId])
   @@index([rutCliente])
   @@index([tareaPlantillaId])
-  @@index([agenteId])
 }
 
 model Notificacion {
   id           Int      @id @default(autoincrement())
-  trabajadorId Int
-  tareaId      Int
   mensaje      String
   leida        Boolean  @default(false)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+  trabajadorId Int
+  tareaId      Int
 
-  trabajador Trabajador    @relation("TrabajadorNotificaciones", fields: [trabajadorId], references: [id_trabajador])
-  tarea      TareaAsignada @relation("TareaAsignadaNotificaciones", fields: [tareaId], references: [id_tarea_asignada])
+  tarea        TareaAsignada @relation("TareaAsignadaNotificaciones", fields: [tareaId], references: [id_tarea_asignada], onDelete: Cascade)
+  trabajador   Trabajador    @relation("TrabajadorNotificaciones", fields: [trabajadorId], references: [id_trabajador], onDelete: Cascade)
 }
 
 enum TipoRelacion {
@@ -183,8 +180,8 @@ enum Presentacion {
 enum EstadoTarea {
   PENDIENTE
   EN_PROCESO
-  VENCIDA
   COMPLETADA
+  VENCIDA
   NO_APLICA
 }
 

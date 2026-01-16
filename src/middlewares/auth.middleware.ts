@@ -3,25 +3,35 @@ import type { Request, Response, NextFunction, RequestHandler } from "express";
 import jwt from "jsonwebtoken";
 import "dotenv/config";
 
+export type Role = "ADMIN" | "SUPERVISOR" | "AGENTE";
+
 export type AuthJwtPayload = {
   id: number;
   nombre: string;
   email: string;
-  // Flag calculado en el login (Google / normal) según tus reglas de negocio
+
+  // ✅ lo que tu app necesita para permisos
+  role: Role;
+
+  // opcionales útiles (si los usas)
+  agenteId?: number | null;
+
+  // flags calculados en login
   isSupervisorOrAdmin?: boolean;
+  isAdmin?: boolean;
 };
 
 // Nunca uses "dev_secret" en producción
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) {
   console.error("❌ JWT_SECRET no está definido en variables de entorno");
-  process.exit(1); // Forzamos fallo al arrancar
+  process.exit(1);
 }
 
 declare global {
   namespace Express {
     interface Request {
-      user?: AuthJwtPayload;
+      user?: AuthJwtPayload; // ✅ ahora incluye role
       token?: string;
     }
   }
@@ -31,7 +41,7 @@ declare global {
  * Middleware principal para proteger rutas con Access Token.
  * - Requiere header: Authorization: Bearer <token>
  * - Valida firma y expiración del token
- * - Inyecta `req.user` (con todos los campos del payload, incl. roles) y `req.token`
+ * - Inyecta `req.user` y `req.token`
  */
 export const authGuard: RequestHandler = (
   req: Request,
@@ -44,11 +54,20 @@ export const authGuard: RequestHandler = (
     return res.status(401).json({ error: "No autenticado (falta token)" });
   }
 
-  const token = authHeader.slice(7); // quitar "Bearer "
+  const token = authHeader.slice(7);
 
   try {
-    // 👇 Aquí usamos AuthJwtPayload completo (incluye isSupervisorOrAdmin si venía en el token)
     const payload = jwt.verify(token, JWT_SECRET) as AuthJwtPayload;
+
+    // ✅ hardening mínimo: si no viene role, lo normalizamos a AGENTE
+    if (!payload.role) {
+      payload.role = "AGENTE";
+    }
+
+    // ✅ también puedes recalcular flags aquí si quieres consistencia
+    payload.isAdmin = payload.role === "ADMIN";
+    payload.isSupervisorOrAdmin =
+      payload.role === "ADMIN" || payload.role === "SUPERVISOR";
 
     req.user = payload;
     req.token = token;
@@ -69,16 +88,8 @@ export const authGuard: RequestHandler = (
 
 /**
  * Middleware extra:
- * Requiere que el usuario logueado sea supervisor o admin (según flag del token)
+ * Requiere que el usuario logueado sea supervisor o admin
  * Úsalo DESPUÉS de `authGuard`.
- *
- * Ejemplo:
- *   router.get(
- *     "/tareas/supervision/resumen",
- *     authGuard,
- *     requireSupervisorOrAdmin,
- *     TareasController.getResumenSupervision
- *   );
  */
 export const requireSupervisorOrAdmin: RequestHandler = (
   req: Request,
@@ -89,7 +100,12 @@ export const requireSupervisorOrAdmin: RequestHandler = (
     return res.status(401).json({ error: "No autenticado" });
   }
 
-  if (!req.user.isSupervisorOrAdmin) {
+  const ok =
+    req.user.role === "ADMIN" ||
+    req.user.role === "SUPERVISOR" ||
+    req.user.isSupervisorOrAdmin === true;
+
+  if (!ok) {
     return res.status(403).json({
       error: "No tienes permisos para acceder a esta sección (solo supervisores/admin)",
     });

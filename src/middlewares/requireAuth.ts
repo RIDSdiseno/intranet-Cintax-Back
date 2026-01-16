@@ -1,26 +1,22 @@
 // src/middlewares/requireAuth.ts
-import { Request, Response, NextFunction } from "express";
+import type { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 
-export interface AuthJwtPayload {
+type Role = "ADMIN" | "SUPERVISOR" | "AGENTE";
+
+export type AuthJwtPayload = {
   id: number;
   nombre: string;
   email: string;
-  // agrega aquí lo que realmente lleve tu token (rol, etc.)
-}
-
-// Request extendida SOLO para este middleware / controladores que la usen
-export interface AuthRequest extends Request {
-  user?: AuthJwtPayload;
-}
+  role: Role;                 // ✅ obligatorio para calzar con express.d.ts
+  agenteId?: number | null;
+  isSupervisorOrAdmin?: boolean;
+  isAdmin?: boolean;
+};
 
 const JWT_SECRET = process.env.JWT_SECRET || "cambiar_esto_en_prod";
 
-export const requireAuth = (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction
-) => {
+export const requireAuth = (req: Request, res: Response, next: NextFunction) => {
   try {
     const authHeader = req.headers.authorization;
 
@@ -32,10 +28,10 @@ export const requireAuth = (
 
     const decoded = jwt.verify(token, JWT_SECRET) as AuthJwtPayload;
 
-    // ahora TS sabe que req tiene user porque usamos AuthRequest
-    req.user = decoded;
+    req.user = decoded; // ✅ calza con la definición global
+    req.token = token;  // ✅ si tu global también define token
 
-    next();
+    return next();
   } catch (error) {
     console.error("[requireAuth] error:", error);
     return res.status(401).json({ message: "Token inválido o expirado" });

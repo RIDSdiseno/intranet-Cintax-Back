@@ -8,6 +8,7 @@ const express_1 = require("express");
 // Rutas hijas
 const auth_route_1 = __importDefault(require("./routes/auth.route"));
 const google_route_1 = __importDefault(require("./routes/google.route"));
+const cliente_routes_1 = __importDefault(require("./routes/cliente.routes"));
 const router = (0, express_1.Router)();
 // =============================
 //  HEALTHCHECK
@@ -23,4 +24,5 @@ router.use("/auth", auth_route_1.default);
 router.use("/drive", google_route_1.default);
 // 👇 OJO: aquí YA NO montamos /tareas
 // router.use("/tareas", tareasRoutes);
+router.use("/clientes", cliente_routes_1.default);
 exports.default = router;

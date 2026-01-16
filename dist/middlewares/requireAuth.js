@@ -14,9 +14,9 @@ const requireAuth = (req, res, next) => {
         }
         const token = authHeader.split(" ")[1];
         const decoded = jsonwebtoken_1.default.verify(token, JWT_SECRET);
-        // ahora TS sabe que req tiene user porque usamos AuthRequest
-        req.user = decoded;
-        next();
+        req.user = decoded; // ✅ calza con la definición global
+        req.token = token; // ✅ si tu global también define token
+        return next();
     }
     catch (error) {
         console.error("[requireAuth] error:", error);

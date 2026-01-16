@@ -24,7 +24,7 @@ import { resolveFolderPath } from "../services/googleDrivePath";
 import type { drive_v3 } from "googleapis";
 import { listGroupMembersEmails } from "../services/googleDirectoryGroups";
 import { isSupervisorOrAdminForTrabajador } from "../lib/roles";
-import type { AuthJwtPayload } from "../middlewares/auth.middleware";
+import type { AuthJwtPayload, Role } from "../middlewares/auth.middleware";
 
 const prisma = new PrismaClient();
 
@@ -48,6 +48,13 @@ function mapEstadoFront(
   // PENDIENTE o EN_PROCESO
   return "pendiente";
 }
+
+const roleFromArea = (area?: string | null): Role => {
+  const a = String(area || "").toUpperCase();
+  if (a === "ADMIN") return "ADMIN";
+  if (a === "SUPERVISOR") return "SUPERVISOR";
+  return "AGENTE";
+};
 
 const MULTI_AREA_USERS: string[] = (process.env.DRIVE_MULTI_AREA_USERS || "")
   .split(",")
@@ -500,17 +507,24 @@ export const googleLoginTrabajador = async (req: Request, res: Response) => {
       );
     }
 
-    // 👇 FLAG de supervisor/Admin calculado desde backend
+    // 👇 FLAGS calculados desde backend
     const isSupervisorOrAdmin = isSupervisorOrAdminForTrabajador({
       email: trabajador.email,
       areaInterna: trabajador.areaInterna ?? undefined,
     });
 
+    const role: Role = roleFromArea(trabajador.areaInterna);
+    const isAdmin = role === "ADMIN";
+
+    // ✅ Payload ahora incluye role (y opcionales útiles)
     const jwtPayload: AuthJwtPayload = {
       id: trabajador.id_trabajador,
       email: trabajador.email,
       nombre: trabajador.nombre,
+      role,
+      agenteId: null,
       isSupervisorOrAdmin,
+      isAdmin,
     };
 
     const accessToken = signAccessToken(jwtPayload);
@@ -539,11 +553,13 @@ export const googleLoginTrabajador = async (req: Request, res: Response) => {
         nombre: trabajador.nombre,
         email: trabajador.email,
         areaInterna: trabajador.areaInterna,
-        isSupervisorOrAdmin, // 👈 usable en el front
+        role, // ✅
+        isSupervisorOrAdmin,
+        isAdmin,
       },
       accessToken,
-      firstLogin, // 👈 primera vez con Google
-      hasPassword, // 👈 ya tiene password propia o no
+      firstLogin,
+      hasPassword,
     });
   } catch (error) {
     console.error("Google login error", error);
@@ -594,18 +610,24 @@ export const loginTrabajador = async (req: Request, res: Response) => {
       return res.status(401).json({ error: "Credenciales inválidas" });
     }
 
-    // 👇 FLAG supervisor/admin igual que en Google login
+    // 👇 FLAGS supervisor/admin igual que en Google login
     const isSupervisorOrAdmin = isSupervisorOrAdminForTrabajador({
       email: user.email,
       areaInterna: user.areaInterna ?? undefined,
     });
 
-    // 1) Access Token (corto) con AuthJwtPayload completo
+    const role: Role = roleFromArea(user.areaInterna);
+    const isAdmin = role === "ADMIN";
+
+    // ✅ Access Token payload completo
     const jwtPayload: AuthJwtPayload = {
       id: user.id_trabajador,
       email: user.email,
       nombre: user.nombre,
+      role,
+      agenteId: null,
       isSupervisorOrAdmin,
+      isAdmin,
     };
 
     const accessToken = signAccessToken(jwtPayload);
@@ -628,14 +650,16 @@ export const loginTrabajador = async (req: Request, res: Response) => {
     // Cookie httpOnly con el refresh token
     setRefreshCookie(res, rt, days);
 
-    // Devolvemos usuario sin passwordHash pero con areaInterna e isSupervisorOrAdmin
+    // Devolvemos usuario sin passwordHash pero con role
     const { passwordHash, ...safeUser } = user;
 
     return res.json({
       accessToken,
       trabajador: {
         ...safeUser,
+        role, // ✅
         isSupervisorOrAdmin,
+        isAdmin,
       },
       remember: rememberFlag,
     });

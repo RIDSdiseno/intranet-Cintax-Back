@@ -16,24 +16,26 @@ const dashboard_routes_1 = __importDefault(require("./routes/dashboard.routes"))
 const error_middleware_js_1 = require("./middlewares/error.middleware.js");
 require("dotenv/config");
 const googleDrive_1 = require("./services/googleDrive");
-const notificaciones_routes_1 = __importDefault(require("./routes/notificaciones.routes")); // Importar las nuevas rutas de notificaciones
-const notificaciones_service_1 = require("./services/notificaciones.service"); // Importar el servicio de notificaciones
+const notificaciones_routes_1 = __importDefault(require("./routes/notificaciones.routes"));
+const notificaciones_service_1 = require("./services/notificaciones.service");
 const node_cron_1 = __importDefault(require("node-cron"));
 const date_fns_1 = require("date-fns");
 const prisma_1 = require("./lib/prisma");
 const client_1 = require("@prisma/client");
-const generarTareas_1 = require("./jobs/generarTareas");
 const auth_controller_1 = require("./controllers/auth.controller");
+// ✅ NUEVO JOB (día 30 -> genera mes siguiente)
+const generarTareasMesSiguiente_1 = require("./jobs/generarTareasMesSiguiente");
+const tareas_masivo_routes_1 = __importDefault(require("./routes/tareas-masivo.routes"));
 // 👇 SUPER IMPORTANTE: log de versión
 console.log("⚙️ [APP] Cargando app.ts **CINTAX TAREAS V5**");
 exports.app = (0, express_1.default)();
+// (opcional pero recomendado en prod detrás de proxy / render / railway / etc)
+exports.app.set("trust proxy", 1);
 const ENABLE_TASK_CRON = process.env.ENABLE_TASK_CRON === "true";
 const ENABLE_GROUPS_CRON = process.env.ENABLE_GROUPS_CRON === "true";
+const ENABLE_NOTI_CRON = process.env.ENABLE_NOTI_CRON !== "false"; // default true
 const corsOptions = {
-    origin: [
-        "https://intranet-cintax.netlify.app",
-        "http://localhost:5173",
-    ],
+    origin: ["https://intranet-cintax.netlify.app", "http://localhost:5173"],
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     credentials: true,
     allowedHeaders: ["Content-Type", "Authorization"],
@@ -41,23 +43,30 @@ const corsOptions = {
 };
 exports.app.use((0, cors_1.default)(corsOptions));
 exports.app.use((0, cookie_parser_1.default)());
-exports.app.use(express_1.default.json());
+exports.app.use(express_1.default.json({ limit: "20mb" }));
 exports.app.use((0, morgan_1.default)("dev"));
 // 🔍 Ruta de debug de versión
 exports.app.get("/api/debug-version", (_req, res) => {
-    res.json({
-        ok: true,
-        version: "cintax-tareas-v5",
-    });
+    res.json({ ok: true, version: "cintax-tareas-v5" });
 });
-// Rutas API
+// =============================
+// RUTAS API
+// =============================
+// ✅ Si tu routes.js tiene /auth, /clientes, etc.
 exports.app.use("/api", routes_js_1.default);
+// ✅ Trabajadores (incluye GET /trabajadores y PATCH /trabajadores/:id)
+//    (internamente el router ya tiene authGuard / requireSupervisorOrAdmin)
 exports.app.use("/api", trabajador_routes_1.default);
+// ✅ Tareas
 exports.app.use("/api/tareas", tareas_routes_1.default);
+// ✅ Dashboard
 exports.app.use("/api/dashboard", dashboard_routes_1.default);
-// NUEVAS rutas de notificaciones
+// ✅ Notificaciones
 exports.app.use("/api/notificaciones", notificaciones_routes_1.default);
+exports.app.use("/api/tareas", tareas_masivo_routes_1.default);
+// Debug cookies (útil)
 exports.app.get("/debug/cookies", (req, res) => res.json({ cookies: req.cookies }));
+// Auth Drive admin (mantener igual)
 exports.app.get("/admin/drive/auth-url", (_req, res) => {
     const url = googleDrive_1.oauth2Client.generateAuthUrl({
         access_type: "offline",
@@ -79,7 +88,7 @@ exports.app.get("/debug/test-notificaciones", async (_req, res) => {
     };
     try {
         log("🧪 Iniciando prueba avanzada de notificaciones...");
-        // 1. OBTENER O CREAR TRABAJADOR DE PRUEBA
+        // 1) OBTENER O CREAR TRABAJADOR DE PRUEBA
         const trabajador = await prisma_1.prisma.trabajador.upsert({
             where: { email: TEST_EMAIL },
             update: {},
@@ -90,7 +99,7 @@ exports.app.get("/debug/test-notificaciones", async (_req, res) => {
             },
         });
         log(`Trabajador de prueba (ID: ${trabajador.id_trabajador}) listo.`);
-        // 2. LIMPIAR DATOS DE PRUEBAS ANTERIORES
+        // 2) LIMPIAR DATOS DE PRUEBAS ANTERIORES
         const deletedNotis = await prisma_1.prisma.notificacion.deleteMany({
             where: { trabajadorId: trabajador.id_trabajador },
         });
@@ -98,12 +107,11 @@ exports.app.get("/debug/test-notificaciones", async (_req, res) => {
         const deletedTareas = await prisma_1.prisma.tareaAsignada.deleteMany({
             where: {
                 trabajadorId: trabajador.id_trabajador,
-                tareaPlantilla: { nombre: { startsWith: "[TEST]" } }
-            }
+                tareaPlantilla: { nombre: { startsWith: "[TEST]" } },
+            },
         });
         log(`Limpiadas ${deletedTareas.count} tareas de prueba antiguas.`);
-        // 3. CREAR PLANTILLAS DE TAREA
-        // Helper para crear plantilla de prueba si no existe
+        // 3) CREAR PLANTILLAS DE TAREA
         async function ensureTestPlantilla(nombre, detalle) {
             let plantilla = await prisma_1.prisma.tareaPlantilla.findFirst({
                 where: { nombre },
@@ -125,90 +133,133 @@ exports.app.get("/debug/test-notificaciones", async (_req, res) => {
         const plantillaHoy = await ensureTestPlantilla("[TEST] Tarea para Hoy", "Hoy");
         const plantillaFutura = await ensureTestPlantilla("[TEST] Tarea Futura", "Futura");
         log("Plantillas de prueba listas.");
-        // 4. CREAR TAREAS CON DISTINTAS FECHAS
+        // 4) CREAR TAREAS CON DISTINTAS FECHAS
         const hoy = new Date();
-        const tareaVencida = await prisma_1.prisma.tareaAsignada.create({ data: { tareaPlantillaId: plantillaVencida.id_tarea_plantilla, trabajadorId: trabajador.id_trabajador, estado: client_1.EstadoTarea.PENDIENTE, fechaProgramada: (0, date_fns_1.subDays)(hoy, 2) } });
+        const tareaVencida = await prisma_1.prisma.tareaAsignada.create({
+            data: {
+                tareaPlantillaId: plantillaVencida.id_tarea_plantilla,
+                trabajadorId: trabajador.id_trabajador,
+                estado: client_1.EstadoTarea.PENDIENTE,
+                fechaProgramada: (0, date_fns_1.subDays)(hoy, 2),
+            },
+        });
         log(`Creada TAREA VENCIDA (ID: ${tareaVencida.id_tarea_asignada}) con fecha ${tareaVencida.fechaProgramada.toISOString()}`);
-        const tareaHoy = await prisma_1.prisma.tareaAsignada.create({ data: { tareaPlantillaId: plantillaHoy.id_tarea_plantilla, trabajadorId: trabajador.id_trabajador, estado: client_1.EstadoTarea.PENDIENTE, fechaProgramada: hoy } });
+        const tareaHoy = await prisma_1.prisma.tareaAsignada.create({
+            data: {
+                tareaPlantillaId: plantillaHoy.id_tarea_plantilla,
+                trabajadorId: trabajador.id_trabajador,
+                estado: client_1.EstadoTarea.PENDIENTE,
+                fechaProgramada: hoy,
+            },
+        });
         log(`Creada TAREA PARA HOY (ID: ${tareaHoy.id_tarea_asignada}) con fecha ${tareaHoy.fechaProgramada.toISOString()}`);
-        const tareaFutura = await prisma_1.prisma.tareaAsignada.create({ data: { tareaPlantillaId: plantillaFutura.id_tarea_plantilla, trabajadorId: trabajador.id_trabajador, estado: client_1.EstadoTarea.PENDIENTE, fechaProgramada: (0, date_fns_1.addDays)(hoy, 5) } });
+        const tareaFutura = await prisma_1.prisma.tareaAsignada.create({
+            data: {
+                tareaPlantillaId: plantillaFutura.id_tarea_plantilla,
+                trabajadorId: trabajador.id_trabajador,
+                estado: client_1.EstadoTarea.PENDIENTE,
+                fechaProgramada: (0, date_fns_1.addDays)(hoy, 5),
+            },
+        });
         log(`Creada TAREA FUTURA (ID: ${tareaFutura.id_tarea_asignada}) con fecha ${tareaFutura.fechaProgramada.toISOString()} (NO debería generar notificación)`);
-        // 5. EJECUTAR EL SERVICIO DE NOTIFICACIONES
+        // 5) EJECUTAR NOTIFICACIONES
         logs.push("\n[TEST-NOTI] ==================================================");
         log("Ejecutando 'generarNotificacionesDeVencimiento'...");
         await (0, notificaciones_service_1.generarNotificacionesDeVencimiento)();
         log("Servicio de notificaciones finalizado.");
         logs.push("[TEST-NOTI] ==================================================\n");
-        // 6. VERIFICAR RESULTADOS
+        // 6) VERIFICAR RESULTADOS
         const notificacionesGeneradas = await prisma_1.prisma.notificacion.findMany({
             where: { trabajadorId: trabajador.id_trabajador },
-            orderBy: { createdAt: 'asc' }
+            orderBy: { createdAt: "asc" },
         });
-        log(`Se encontraron ${notificacionesGeneradas.length} notificaciones en la BD para el usuario de prueba.`);
+        log(`Se encontraron ${notificacionesGeneradas.length} notificaciones en la BD.`);
         if (notificacionesGeneradas.length > 0) {
             logs.push("Notificaciones generadas:");
-            notificacionesGeneradas.forEach(n => {
-                logs.push(`  - ID: ${n.id}, Mensaje: "${n.mensaje}"`);
-            });
+            notificacionesGeneradas.forEach((n) => logs.push(`  - ID: ${n.id}, Mensaje: "${n.mensaje}"`));
         }
         else {
-            logs.push("ADVERTENCIA: No se generó ninguna notificación. Revisa la lógica del servicio y los logs de la consola.");
+            logs.push("ADVERTENCIA: No se generó ninguna notificación.");
         }
-        // 7. SEGUNDA EJECUCIÓN PARA PROBAR DUPLICADOS
+        // 7) SEGUNDA EJECUCIÓN PARA DUPLICADOS
         logs.push("\n[TEST-NOTI] ==================================================");
-        log("Ejecutando el servicio por SEGUNDA VEZ para probar la lógica anti-duplicados...");
+        log("Ejecutando servicio por SEGUNDA VEZ (anti-duplicados)...");
         await (0, notificaciones_service_1.generarNotificacionesDeVencimiento)();
-        log("Segunda ejecución finalizada. La consola del servidor debería indicar 'No se crearon notificaciones nuevas'.");
+        log("Segunda ejecución finalizada.");
         logs.push("[TEST-NOTI] ==================================================\n");
-        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-        res.status(200).send(logs.join('\n'));
+        res.setHeader("Content-Type", "text/plain; charset=utf-8");
+        res.status(200).send(logs.join("\n"));
     }
     catch (error) {
         const errorMessage = error.message;
         log(`💥 ERROR: ${errorMessage}`);
         console.error("💥 [TEST-NOTI] Error durante la prueba:", error);
-        if (!res.headersSent) {
+        if (!res.headersSent)
             res.status(500).json({ ok: false, error: errorMessage, logs });
-        }
-        else {
+        else
             res.end(`\n💥 ERROR: ${errorMessage}\n`);
-        }
     }
 });
-exports.app.post("/api/tareas/generar", async (_req, res) => {
+// ======================================================
+// ✅ ENDPOINT MANUAL: genera tareas MES SIGUIENTE
+// - default: solo corre si corresponde (día 30 o último)
+// - force=true: forzar ejecución como si fuera día 30
+// ======================================================
+exports.app.post("/api/tareas/generar-mes-siguiente", async (req, res) => {
     try {
-        await (0, generarTareas_1.generarTareasAutomaticas)();
-        res.json({ ok: true });
+        const force = String(req.query.force ?? "") === "true";
+        if (force) {
+            const now = new Date();
+            const y = now.getFullYear();
+            const m = now.getMonth(); // 0-11
+            const lastDay = new Date(y, m + 1, 0).getDate();
+            const day = lastDay >= 30 ? 30 : lastDay;
+            const fake = new Date(y, m, day, now.getHours(), now.getMinutes(), 0, 0);
+            const out = await (0, generarTareasMesSiguiente_1.generarTareasMesSiguiente)(fake);
+            return res.json({ ok: true, forced: true, ...out });
+        }
+        const out = await (0, generarTareasMesSiguiente_1.generarTareasMesSiguiente)(new Date());
+        return res.json({ ok: true, forced: false, ...out });
     }
     catch (e) {
-        console.error("Error generando tareas", e);
-        res.status(500).json({ ok: false });
+        console.error("Error generando tareas (mes siguiente)", e);
+        return res.status(500).json({ ok: false });
     }
 });
-exports.app.use(error_middleware_js_1.errorHandler);
+// ======================================================
+// ✅ CRON TAREAS: corre TODOS los días (02:05)
+// pero el job decide si corresponde (día 30 / último día)
+// ======================================================
 if (ENABLE_TASK_CRON) {
-    node_cron_1.default.schedule("0 9 * * *", async () => {
+    node_cron_1.default.schedule("5 2 * * *", async () => {
         try {
-            console.log("[CRON] Generando tareas automáticas...");
-            await (0, generarTareas_1.generarTareasAutomaticas)(new Date());
-            console.log("[CRON] OK tareas generadas");
+            console.log("[CRON] Tick: generar tareas mes siguiente (si corresponde)...");
+            const out = await (0, generarTareasMesSiguiente_1.generarTareasMesSiguiente)(new Date());
+            console.log("[CRON] OK:", out);
         }
         catch (e) {
-            console.error("[CRON] Error generando tareas:", e);
+            console.error("[CRON] Error generando tareas mes siguiente:", e);
         }
     });
 }
-// Tarea programada para generar notificaciones de vencimiento para ejecutarse cada 5 minutos sin duplicar las ya creadas
-node_cron_1.default.schedule('*/5 * * * *', async () => {
-    try {
-        console.log('[CRON] Generando notificaciones de vencimiento...');
-        await (0, notificaciones_service_1.generarNotificacionesDeVencimiento)();
-        console.log('[CRON] OK notificaciones generadas');
-    }
-    catch (e) {
-        console.error('[CRON] Error generando notificaciones de vencimiento:', e);
-    }
-});
+// ======================================================
+// ✅ CRON NOTIFICACIONES: cada 5 minutos
+// ======================================================
+if (ENABLE_NOTI_CRON) {
+    node_cron_1.default.schedule("*/5 * * * *", async () => {
+        try {
+            console.log("[CRON] Generando notificaciones de vencimiento...");
+            await (0, notificaciones_service_1.generarNotificacionesDeVencimiento)();
+            console.log("[CRON] OK notificaciones generadas");
+        }
+        catch (e) {
+            console.error("[CRON] Error generando notificaciones de vencimiento:", e);
+        }
+    });
+}
+// ======================================================
+// ✅ CRON SYNC AREAS DESDE GOOGLE
+// ======================================================
 if (ENABLE_GROUPS_CRON) {
     node_cron_1.default.schedule("0 7 * * *", async () => {
         try {
@@ -221,3 +272,5 @@ if (ENABLE_GROUPS_CRON) {
         }
     });
 }
+// ⚠️ Error handler SIEMPRE al final
+exports.app.use(error_middleware_js_1.errorHandler);

@@ -1,148 +1,246 @@
-// src/scripts/ensure-drive-folders-conta-A01-enero2025.ts
+// src/scripts/ensure-drive-folders-conta-all-agents.ts
+/**
+ * ✅ Qué hace este script (versión general):
+ * - Recorre TODOS los agentes (trabajadores) que tengan cartera (clientes.agenteId)
+ *   y/o tareas CONTA asignadas.
+ * - Para un rango de fechas (por defecto un mes), busca tareas CONTA:
+ *      - driveTareaFolderId = null
+ *      - rutCliente != null
+ *      - estado != NO_APLICA
+ *      - fechaProgramada dentro del rango
+ * - Y asegura/crea la carpeta Drive con ensureContaTaskFolderForTareaAsignada(id)
+ *
+ * ✅ Cómo correr:
+ *  - Railway/Local (con DATABASE_URL):
+ *    npx ts-node src/scripts/ensure-drive-folders-conta-all-agents.ts
+ *
+ * ✅ Variables opcionales:
+ *  - TARGET_YEAR=2026 TARGET_MONTH=1
+ *  - START=2026-01-01 END=2026-02-01   (END es exclusivo)
+ *  - TAKE=200
+ *  - DRY_RUN=true  (no crea carpetas, solo muestra qué haría)
+ *  - ONLY_AGENT_ID=7 (procesa solo un trabajadorId)
+ */
+
 import "dotenv/config";
-import { PrismaClient, Area } from "@prisma/client";
+import { PrismaClient, Prisma, Area } from "@prisma/client";
 import { ensureContaTaskFolderForTareaAsignada } from "../services/driveContaTasks";
 
 const prisma = new PrismaClient();
 
-// 🔹 Agente A01 (id_trabajador = 7)
-const ONLY_WORKER_ID = 7;
+// -----------------------------
+// Config
+// -----------------------------
+const ONLY_AGENT_ID = process.env.ONLY_AGENT_ID ? Number(process.env.ONLY_AGENT_ID) : null;
+const TAKE = process.env.TAKE ? Math.max(10, Math.min(1000, Number(process.env.TAKE))) : 200;
+const DRY_RUN = String(process.env.DRY_RUN ?? "").toLowerCase() === "true";
 
-// 🔹 Año y mes objetivo (enero)
-const TARGET_YEAR = 2025;
-const TARGET_MONTH = 1; // 1 = enero
+// Si viene START/END, se usan. Si no, usa TARGET_YEAR/TARGET_MONTH.
+const TARGET_YEAR = process.env.TARGET_YEAR ? Number(process.env.TARGET_YEAR) : 2026;
+const TARGET_MONTH = process.env.TARGET_MONTH ? Number(process.env.TARGET_MONTH) : 1;
 
-// 🔹 RUTs de la cartera CONTA/A01 (Camila).
-//    Se dejan tal cual vienen, aunque algunos se repitan.
-const RUTS_AGENTE_A01: string[] = [
-  "76.511.417-9", // PANEXPRESS SOCIEDAD ANONIMA
-  "77.206.636-8", // INVERSIONES RPH SPA
-  "77.432.589-1", // SOCIEDAD DE INVERSION Y SERVICIOS MEDICOS EMILVAR SPA
-  "76.473.267-7", // La Boutique del Luthier SPA
-  "77.113.924-8", // Comercial Fenise SPA
-  "76.949.787-0", // PIPE FULL SPA
-  "76.366.844-4", // AVENDANO COMERCIALIZADORA Y CONSULTORA DE PRODUCTOS LIMITADA
-  "76.274.504-6", // COMERCIAL HC LIMITADA (Holding BRAS)
-  "76.972.874-0", // COMERCIAL BRAS LIMITADA (Holding BRAS)
-  "76.001.158-4", // ECOPACTO (Holding BRAS)
-  "76.001.158-4", // TRATAMIENTO DE RESIDUOS INDUSTRIALES LIMITADA (Holding BRAS)
-  "76.661.486-8", // SOCIEDAD IMPORTADORA SOUTHERNKING LIMITADA
-  "65.144.829-8", // Corporacion Educacional Rodriguez Cornejo
-  "77.675.520-6", // SOC. EDUCACIONAL Y CAPACITACION RODRIGUEZ CORNEJO SPA (Holding Sandra)
-  "76.383.411-5", // INVERSIONES SANTA CECILIA (Holding Sandra)
-  "76.086.091-3", // SAN SALVADOR LTDA SOC EDUCACIONAL E INMOBILIARIA (Holding Sandra)
-  "76.558.624-0", // SOC EDUCACIONAL E INMOBILIARIA SAN FERMIN LTDA (Holding Sandra)
-  "76.430.373-3", // INVERSIONES SAN JAVIER SPA (Holding Sandra)
-  "77.990.400-8", // SOC EDUCACIONAL E INMOBILIARIA SAN IGNACIO LTDA (Holding Sandra)
-  "76.620.801-0", // INVERSIONES Y HOTELERA SAN MIGUEL SPA (Holding Sandra)
-  "76.340.069-7", // SANTA JOSEFINA SPA (Holding Sandra)
-  "76.625.301-6", // SOCIEDAD SAN FERNANDO LTDA (Holding Sandra)
-  "76.159.135-5", // SOC EDUCACIONAL SAN ALBERTO SPA (Holding Sandra)
-  "76.074.071-3", // SOC EDUCACIONAL ANDRES BELLO SPA (Holding Sandra)
-  "76.439.921-8", // COMERCIALIZADORA Y ELABORADORA DILICI LIMITADA
-  "78.991.080-4", // SERVICIOS Y RENTAS G V LIMITADA (Holding GV)
-  "76.607.281-K", // TRANSPORTES ITALIA SPA (Holding GV)
-  "76.567.655-K", // VENDING CENTER SPA
-  "76.876.439-5", // AISLACEL SPA (Holding Aislacel)
-  "76.366.289-6", // MED ENERGIA SPA (Holding Aislacel)
-  "77.092.057-4", // EMPRESA FABR E IMPORT DE AISLANTES TERMICOS SPA (Holding Aislacel)
-  "76.681.721-1", // SERV Y PROY TECNOLOGIA PRORED ZONA NORTE LTDA (Holding Prored)
-  "76.315.244-8", // ASESO. EN TECNOLOGIAS DE LA INFO. J.P. HENRÍQUEZ JARA EIRL (Holding Prored)
-  "76.189.072-7", // ESTRATEGICAMENTE SPA (Holding Pinto)
-  "96.788.070-1", // INVERSIONES AVALON SPA (Holding Pinto)
-  "96.788.070-1", // INVERSIONES LOURDES SPA (Holding 2)
-  "76.706.316-4", // GLOBAL ADVISORY AND INVESTMENT SPA (Holding Global)
-  "76.598.868-3", // INMOBILIARIA E INVERSIONES WILSON SPA (Holding Global)
-  "76.914.491-9", // CONSTRUCTORA E INMOBILIARIA QUATTROMAS SPA (Holding Quattromas)
-  "77.119.688-8", // PROYECTOS DE DISENO E INGENIERIA QUATTROMAS SPA (Holding Quattromas)
-];
+function parseISODate(s: string) {
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) throw new Error(`Fecha inválida: ${s}`);
+  return d;
+}
 
-async function main() {
-  console.log("🔹 Creación de carpetas Drive para tareas CONTA (Agente A01)...");
-  console.log("📌 trabajadorId =", ONLY_WORKER_ID);
-  console.log("📌 Mes/Año =", TARGET_MONTH, TARGET_YEAR);
-  console.log("📌 RUTs considerados (incluye posibles duplicados):", RUTS_AGENTE_A01.length);
+function resolveRange(): { startDate: Date; endDate: Date } {
+  const START = process.env.START;
+  const END = process.env.END;
 
-  // 📅 Rango del mes de enero 2025
-  const startDate = new Date(TARGET_YEAR, TARGET_MONTH - 1, 1); // 2025-01-01
-  const endDate = new Date(TARGET_YEAR, TARGET_MONTH, 1);       // 2025-02-01 (exclusivo)
+  if (START && END) {
+    const startDate = parseISODate(START);
+    const endDate = parseISODate(END);
+    return { startDate, endDate };
+  }
 
-  const where: any = {
-    driveTareaFolderId: null,
-    trabajadorId: ONLY_WORKER_ID,
-    rutCliente: { in: RUTS_AGENTE_A01 },
-    asignado: {
-      areaInterna: Area.CONTA,
-    },
-    fechaProgramada: {
-      gte: startDate,
-      lt: endDate,
-    },
+  // rango mensual [inicio, fin)
+  const startDate = new Date(TARGET_YEAR, TARGET_MONTH - 1, 1);
+  const endDate = new Date(TARGET_YEAR, TARGET_MONTH, 1);
+  return { startDate, endDate };
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// -----------------------------
+// Tipos
+// -----------------------------
+type TareaLite = Prisma.TareaAsignadaGetPayload<{
+  select: {
+    id_tarea_asignada: true;
+    trabajadorId: true;
+    rutCliente: true;
+    fechaProgramada: true;
+    tareaPlantillaId: true;
   };
+}>;
 
-  const tareas = await prisma.tareaAsignada.findMany({
-    where,
-    select: {
-      id_tarea_asignada: true,
-      trabajadorId: true,
-      rutCliente: true,
-      fechaProgramada: true,
-      tareaPlantillaId: true,
-    },
-    orderBy: {
-      id_tarea_asignada: "asc",
-    },
+type Agente = { id_trabajador: number; nombre: string; email: string };
+
+// -----------------------------
+// Helpers
+// -----------------------------
+async function getAgentes(): Promise<Agente[]> {
+  // 1) Agentes que tengan clientes asignados
+  const agentesConClientes = await prisma.trabajador.findMany({
+    where: ONLY_AGENT_ID ? { id_trabajador: ONLY_AGENT_ID } : undefined,
+    select: { id_trabajador: true, nombre: true, email: true },
+    orderBy: { id_trabajador: "asc" },
   });
 
-  console.log(
-    `📌 Tareas sin carpeta en ${TARGET_MONTH}/${TARGET_YEAR}:`,
-    tareas.length
-  );
+  if (ONLY_AGENT_ID) return agentesConClientes;
 
-  if (tareas.length === 0) {
-    console.log("✅ No hay tareas pendientes de carpeta para este filtro.");
+  // Si quieres limitar solo a CONTA, descomenta:
+  // return agentesConClientes.filter(a => a.areaInterna === Area.CONTA);
+
+  return agentesConClientes;
+}
+
+async function getRutsCarteraAgente(agenteId: number): Promise<string[]> {
+  const clientes = await prisma.cliente.findMany({
+    where: { agenteId, activo: true },
+    select: { rut: true },
+    orderBy: { rut: "asc" },
+  });
+  return clientes.map((c) => c.rut).filter(Boolean);
+}
+
+async function getRutsFallbackPorTareas(agenteId: number, startDate: Date, endDate: Date): Promise<string[]> {
+  const rows = await prisma.tareaAsignada.findMany({
+    where: {
+      trabajadorId: agenteId,
+      rutCliente: { not: null },
+      fechaProgramada: { gte: startDate, lt: endDate },
+    },
+    select: { rutCliente: true },
+    distinct: ["rutCliente"],
+    orderBy: { rutCliente: "asc" },
+  });
+
+  return rows.map((r) => r.rutCliente).filter((x): x is string => !!x);
+}
+
+async function procesarAgente(agente: Agente, startDate: Date, endDate: Date) {
+  const agenteId = agente.id_trabajador;
+
+  // 1) RUTs por cartera
+  let ruts = await getRutsCarteraAgente(agenteId);
+
+  // 2) fallback si no tiene cartera
+  if (ruts.length === 0) {
+    ruts = await getRutsFallbackPorTareas(agenteId, startDate, endDate);
+  }
+
+  if (ruts.length === 0) {
+    console.log(`\n👤 Agente ${agenteId} (${agente.nombre}) → sin RUTs (cartera ni tareas en rango).`);
     return;
   }
 
+  console.log(`\n👤 Agente ${agenteId} (${agente.nombre}) → RUTs considerados: ${ruts.length}`);
+
+  // Vamos paginando por id_tarea_asignada para no traer todo de golpe
+  let cursorId: number | null = null;
+  let totalEncontradas = 0;
   let ok = 0;
   let fail = 0;
 
-  for (const t of tareas) {
-    const id = t.id_tarea_asignada;
-    const fechaISO = t.fechaProgramada
-      ? t.fechaProgramada.toISOString()
-      : "NULL";
+  while (true) {
+    const tareas: TareaLite[] = await prisma.tareaAsignada.findMany({
+      where: {
+        driveTareaFolderId: null,
+        trabajadorId: agenteId,
+        rutCliente: { in: ruts },
+        estado: { not: "NO_APLICA" },
+        fechaProgramada: { gte: startDate, lt: endDate },
 
-    console.log(
-      `\n▶️ Procesando tarea ${id} (trabajadorId=${t.trabajadorId}, rut=${t.rutCliente}, fecha=${fechaISO})`
-    );
+        // ✅ importante: asegurar que sea tarea CONTA por plantilla
+        tareaPlantilla: { area: Area.CONTA },
+      },
+      select: {
+        id_tarea_asignada: true,
+        trabajadorId: true,
+        rutCliente: true,
+        fechaProgramada: true,
+        tareaPlantillaId: true,
+      },
+      orderBy: { id_tarea_asignada: "asc" },
+      take: TAKE,
+      ...(cursorId ? { skip: 1, cursor: { id_tarea_asignada: cursorId } } : {}),
+    });
 
+    if (tareas.length === 0) break;
+
+    totalEncontradas += tareas.length;
+
+    for (const t of tareas) {
+      const id = t.id_tarea_asignada;
+      const rut = t.rutCliente ?? "NULL";
+      const fechaISO = t.fechaProgramada?.toISOString?.() ?? String(t.fechaProgramada);
+
+      if (DRY_RUN) {
+        console.log(`   🧪 DRY_RUN → Aseguraría carpeta tarea ${id} (rut=${rut}, fecha=${fechaISO})`);
+        ok++;
+        continue;
+      }
+
+      try {
+        const folderId = await ensureContaTaskFolderForTareaAsignada(id);
+        console.log(`   ✅ tarea ${id} → folder ${folderId} (rut=${rut}, fecha=${fechaISO})`);
+        ok++;
+
+        // Delay suave para no golpear Drive API
+        await sleep(150);
+      } catch (e: any) {
+        console.error(`   ❌ tarea ${id} (rut=${rut}, fecha=${fechaISO}) → ${e?.message ?? e}`);
+        fail++;
+        await sleep(150);
+      }
+    }
+
+    cursorId = tareas[tareas.length - 1].id_tarea_asignada;
+  }
+
+  console.log(
+    `📌 Agente ${agenteId} (${agente.nombre}) → tareas sin carpeta en rango: ${totalEncontradas} | ✅ OK ${ok} | ❌ FAIL ${fail}`
+  );
+}
+
+// -----------------------------
+// Main
+// -----------------------------
+async function main() {
+  const { startDate, endDate } = resolveRange();
+
+  console.log("🔹 Ensure Drive folders para tareas CONTA (GENERAL)");
+  console.log("📌 Rango:", startDate.toISOString(), "→", endDate.toISOString(), "(END exclusivo)");
+  console.log("📌 TAKE:", TAKE, "| DRY_RUN:", DRY_RUN, "| ONLY_AGENT_ID:", ONLY_AGENT_ID ?? "ALL");
+
+  const agentes = await getAgentes();
+
+  if (agentes.length === 0) {
+    console.log("⚠️ No hay agentes para procesar.");
+    return;
+  }
+
+  console.log("👥 Agentes a procesar:", agentes.length);
+
+  for (const a of agentes) {
     try {
-      const folderId = await ensureContaTaskFolderForTareaAsignada(id);
-      console.log(`   ✅ Carpeta creada/asegurada → ${folderId}`);
-      ok++;
-
-      // Pequeño delay para no golpear tanto la API
-      await new Promise((r) => setTimeout(r, 200));
+      await procesarAgente(a, startDate, endDate);
     } catch (e: any) {
-      console.error(
-        `   ❌ Error creando carpeta para tarea ${id}:`,
-        e?.message ?? e
-      );
-      fail++;
+      console.error(`❌ Error procesando agente ${a.id_trabajador}:`, e?.message ?? e);
     }
   }
 
-  console.log("\n🏁 Proceso terminado.");
-  console.log("   ✅ OK:", ok);
-  console.log("   ❌ Errores:", fail);
+  console.log("\n🏁 Terminado.");
 }
 
 main()
   .catch((e) => {
-    console.error("❌ Error general del script:", e);
+    console.error("❌ Error general:", e);
     process.exit(1);
   })
   .finally(async () => {
-    prisma.$disconnect();
+    await prisma.$disconnect();
   });

@@ -436,7 +436,7 @@ export const crearTareasDesdePlantilla = async (req: AuthRequest, res: Response)
 
 
 // ---------------------------------------------------------------------------
-// 6) Actualizar estado (COMPLETADA → crear siguiente período)
+// 6) Actualizar estado (SIN crear siguiente período)
 //    PATCH /tareas/:id/estado
 // ---------------------------------------------------------------------------
 export const actualizarEstado = async (req: AuthRequest, res: Response) => {
@@ -456,10 +456,14 @@ export const actualizarEstado = async (req: AuthRequest, res: Response) => {
 
     const dataUpdate: any = { estado };
 
+    // Manejo fechaComplecion
     if (estado === "COMPLETADA") {
       dataUpdate.fechaComplecion = fechaComplecion ? new Date(fechaComplecion) : new Date();
     } else if (fechaComplecion) {
       dataUpdate.fechaComplecion = new Date(fechaComplecion);
+    } else {
+      // opcional: si no está completada y no te mandan fecha, podrías limpiar la fecha
+      // dataUpdate.fechaComplecion = null;
     }
 
     const tareaActualizada = await prisma.tareaAsignada.update({
@@ -468,63 +472,17 @@ export const actualizarEstado = async (req: AuthRequest, res: Response) => {
       include: { tareaPlantilla: true },
     });
 
+    // ✅ Mantener: asegurar carpeta para CONTA
     if (tareaActualizada.tareaPlantilla?.area === Area.CONTA) {
       try {
         await ensureContaTaskFolderForTareaAsignada(tareaActualizada.id_tarea_asignada);
       } catch (e) {
-        console.error("[actualizarEstado] No se pudo asegurar carpeta de la tarea actual:", e);
+        console.error("[actualizarEstado] No se pudo asegurar carpeta de la tarea:", e);
+        // NO cortamos la respuesta, porque el estado ya se guardó en BD
       }
     }
 
-    if (
-      tareaActualizada.estado === "COMPLETADA" &&
-      tareaActualizada.tareaPlantilla &&
-      tareaActualizada.rutCliente
-    ) {
-      const plantilla = tareaActualizada.tareaPlantilla;
-      const fechaBase = tareaActualizada.fechaProgramada ?? new Date();
-
-      let siguienteFecha: Date | null = null;
-
-      if ((plantilla as any).frecuencia === "MENSUAL") {
-        siguienteFecha = new Date(fechaBase);
-        siguienteFecha.setMonth(fechaBase.getMonth() + 1);
-      } else if ((plantilla as any).frecuencia === "SEMANAL") {
-        siguienteFecha = new Date(fechaBase);
-        siguienteFecha.setDate(fechaBase.getDate() + 7);
-      }
-
-      if (siguienteFecha) {
-        const existe = await prisma.tareaAsignada.findFirst({
-          where: {
-            tareaPlantillaId: plantilla.id_tarea_plantilla,
-            rutCliente: tareaActualizada.rutCliente,
-            fechaProgramada: siguienteFecha,
-          },
-        });
-
-        if (!existe) {
-          const nueva = await prisma.tareaAsignada.create({
-            data: {
-              tareaPlantillaId: plantilla.id_tarea_plantilla,
-              rutCliente: tareaActualizada.rutCliente,
-              trabajadorId: tareaActualizada.trabajadorId,
-              estado: "PENDIENTE",
-              fechaProgramada: siguienteFecha,
-              comentarios: "Tarea generada automáticamente para el siguiente período",
-            },
-          });
-
-          try {
-            if (plantilla.area === Area.CONTA) {
-              await ensureContaTaskFolderForTareaAsignada(nueva.id_tarea_asignada);
-            }
-          } catch (e) {
-            console.error("[actualizarEstado] No se pudo crear carpeta Drive para tarea nueva:", e);
-          }
-        }
-      }
-    }
+    // ❌ Eliminado: creación automática de la siguiente tarea al completar
 
     return res.json(tareaActualizada);
   } catch (error) {
@@ -532,6 +490,7 @@ export const actualizarEstado = async (req: AuthRequest, res: Response) => {
     return res.status(500).json({ message: "Error actualizando estado de tarea" });
   }
 };
+
 
 // ---------------------------------------------------------------------------
 // 7) Resumen de supervisión

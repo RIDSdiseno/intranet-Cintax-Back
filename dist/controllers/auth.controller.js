@@ -29,6 +29,14 @@ function mapEstadoFront(estado, fechaProgramada) {
     // PENDIENTE o EN_PROCESO
     return "pendiente";
 }
+const roleFromArea = (area) => {
+    const a = String(area || "").toUpperCase();
+    if (a === "ADMIN")
+        return "ADMIN";
+    if (a === "SUPERVISOR")
+        return "SUPERVISOR";
+    return "AGENTE";
+};
 const MULTI_AREA_USERS = (process.env.DRIVE_MULTI_AREA_USERS || "")
     .split(",")
     .map((e) => e.trim().toLowerCase())
@@ -413,16 +421,22 @@ const googleLoginTrabajador = async (req, res) => {
         catch (e) {
             console.error("Error actualizando areaInterna por grupos en login Google:", e);
         }
-        // 👇 FLAG de supervisor/Admin calculado desde backend
+        // 👇 FLAGS calculados desde backend
         const isSupervisorOrAdmin = (0, roles_1.isSupervisorOrAdminForTrabajador)({
             email: trabajador.email,
             areaInterna: trabajador.areaInterna ?? undefined,
         });
+        const role = roleFromArea(trabajador.areaInterna);
+        const isAdmin = role === "ADMIN";
+        // ✅ Payload ahora incluye role (y opcionales útiles)
         const jwtPayload = {
             id: trabajador.id_trabajador,
             email: trabajador.email,
             nombre: trabajador.nombre,
+            role,
+            agenteId: null,
             isSupervisorOrAdmin,
+            isAdmin,
         };
         const accessToken = signAccessToken(jwtPayload);
         // 🔐 Refresh token
@@ -445,11 +459,13 @@ const googleLoginTrabajador = async (req, res) => {
                 nombre: trabajador.nombre,
                 email: trabajador.email,
                 areaInterna: trabajador.areaInterna,
-                isSupervisorOrAdmin, // 👈 usable en el front
+                role, // ✅
+                isSupervisorOrAdmin,
+                isAdmin,
             },
             accessToken,
-            firstLogin, // 👈 primera vez con Google
-            hasPassword, // 👈 ya tiene password propia o no
+            firstLogin,
+            hasPassword,
         });
     }
     catch (error) {
@@ -488,17 +504,22 @@ const loginTrabajador = async (req, res) => {
         if (!ok) {
             return res.status(401).json({ error: "Credenciales inválidas" });
         }
-        // 👇 FLAG supervisor/admin igual que en Google login
+        // 👇 FLAGS supervisor/admin igual que en Google login
         const isSupervisorOrAdmin = (0, roles_1.isSupervisorOrAdminForTrabajador)({
             email: user.email,
             areaInterna: user.areaInterna ?? undefined,
         });
-        // 1) Access Token (corto) con AuthJwtPayload completo
+        const role = roleFromArea(user.areaInterna);
+        const isAdmin = role === "ADMIN";
+        // ✅ Access Token payload completo
         const jwtPayload = {
             id: user.id_trabajador,
             email: user.email,
             nombre: user.nombre,
+            role,
+            agenteId: null,
             isSupervisorOrAdmin,
+            isAdmin,
         };
         const accessToken = signAccessToken(jwtPayload);
         // 2) Refresh Token (cookie httpOnly) + registro en DB
@@ -515,13 +536,15 @@ const loginTrabajador = async (req, res) => {
         });
         // Cookie httpOnly con el refresh token
         setRefreshCookie(res, rt, days);
-        // Devolvemos usuario sin passwordHash pero con areaInterna e isSupervisorOrAdmin
+        // Devolvemos usuario sin passwordHash pero con role
         const { passwordHash, ...safeUser } = user;
         return res.json({
             accessToken,
             trabajador: {
                 ...safeUser,
+                role, // ✅
                 isSupervisorOrAdmin,
+                isAdmin,
             },
             remember: rememberFlag,
         });
@@ -987,12 +1010,14 @@ const listMyRutFolders = async (req, res) => {
             return res.status(401).json({ error: "No autenticado" });
         }
         const drive = (0, googleDrive_1.getAdminDriveClient)();
+        // Año
         let yearString = req.params.year;
         if (!yearString) {
             yearString = new Date().getFullYear().toString();
         }
         const basePath = ["CINTAX", yearString];
         const yearFolderId = await (0, googleDrivePath_1.resolveFolderPath)(drive, basePath);
+        // 1) Categorías de primer nivel (ADMIN, CONTA, RRHH, TRIBUTARIO, etc.)
         const categoriasRes = await drive.files.list({
             q: `'${yearFolderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
             fields: "files(id, name, mimeType, modifiedTime)",
@@ -1006,10 +1031,11 @@ const listMyRutFolders = async (req, res) => {
         const visibleRutFolders = [];
         const isAdminUser = trabajador?.areaInterna === client_1.Area.ADMIN ||
             (GOOGLE_DRIVE_ADMIN_EMAIL !== undefined &&
-                userEmail === GOOGLE_DRIVE_ADMIN_EMAIL?.toLowerCase());
+                userEmail === GOOGLE_DRIVE_ADMIN_EMAIL);
         const isMultiAreaUser = MULTI_AREA_USERS.includes(userEmail);
-        const shouldStartAtCategorias = isAdminUser || isMultiAreaUser;
-        if (shouldStartAtCategorias) {
+        const userDomain = userEmail.split("@")[1] ?? "";
+        // === CASO 1: ADMIN o multi-área → parte en categorías (CONTA / RRHH / ...) ===
+        if (isAdminUser || isMultiAreaUser) {
             for (const categoria of categorias) {
                 if (!categoria.id)
                     continue;
@@ -1031,17 +1057,62 @@ const listMyRutFolders = async (req, res) => {
                 folders: visibleRutFolders,
             });
         }
-        const groupEnvVar = trabajador?.areaInterna
-            ? AREA_TO_GROUP_ENV[trabajador.areaInterna]
-            : undefined;
+        // === CASO 2: trabajador normal → sólo su área, y permisos en carpeta de área ===
+        if (!trabajador?.areaInterna) {
+            // no tiene área asignada → no ve nada
+            return res.json({
+                year: yearString,
+                basePath,
+                startLevel: "rut",
+                folders: [],
+            });
+        }
+        const expectedName = trabajador.areaInterna.toString().toUpperCase();
+        const groupEnvVar = AREA_TO_GROUP_ENV[trabajador.areaInterna];
         const groupForUser = groupEnvVar
             ? process.env[groupEnvVar]?.toLowerCase() ?? null
             : null;
         for (const categoria of categorias) {
             if (!categoria.id)
                 continue;
-            const categoriaName = categoria.name ?? "";
-            const catPathNames = ["CINTAX", yearString, categoriaName];
+            const categoriaNameUpper = (categoria.name ?? "").toUpperCase();
+            if (categoriaNameUpper !== expectedName)
+                continue; // sólo su área
+            // 1) Revisamos permisos de la carpeta de área (CONTA / RRHH / TRIBUTARIO / ...)
+            try {
+                const permResp = await drive.permissions.list({
+                    fileId: categoria.id,
+                    fields: "permissions(emailAddress,type,domain,role)",
+                });
+                const perms = permResp.data.permissions ?? [];
+                const hasAccessToCategoria = perms.some((p) => {
+                    const pEmail = p.emailAddress?.toLowerCase();
+                    // permiso directo al usuario
+                    if (p.type === "user" && pEmail === userEmail)
+                        return true;
+                    // permiso al grupo de área (ej: contabilidad@cintax.cl)
+                    if (p.type === "group" && groupForUser && pEmail === groupForUser) {
+                        return true;
+                    }
+                    // permiso al dominio completo (ej: @cintax.cl)
+                    if (p.type === "domain" &&
+                        p.domain?.toLowerCase() === userDomain.toLowerCase()) {
+                        return true;
+                    }
+                    return false;
+                });
+                if (!hasAccessToCategoria) {
+                    // no tiene acceso a la carpeta de área → no ve sus RUT
+                    continue;
+                }
+            }
+            catch (permErr) {
+                console.error("Error leyendo permisos de categoría (área)", categoria.id, permErr);
+                // si falla permisos, por seguridad no mostramos nada de esa categoría
+                continue;
+            }
+            // 2) Si tiene acceso a la categoría, mostramos TODOS los RUT dentro de esa área
+            const catPathNames = ["CINTAX", yearString, categoria.name ?? ""];
             const subRes = await drive.files.list({
                 q: `'${categoria.id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
                 fields: "files(id, name, mimeType, modifiedTime)",
@@ -1051,48 +1122,15 @@ const listMyRutFolders = async (req, res) => {
             for (const folder of subFolders) {
                 if (!folder.id)
                     continue;
-                if (isAdminUser && !isMultiAreaUser) {
-                    const pathNames = [...catPathNames, folder.name ?? ""];
-                    visibleRutFolders.push({
-                        id: folder.id,
-                        name: folder.name ?? "",
-                        categoria: categoriaName,
-                        modifiedTime: folder.modifiedTime ?? null,
-                        pathNames,
-                        pathString: pathNames.join(" / "),
-                    });
-                    continue;
-                }
-                try {
-                    const permResp = await drive.permissions.list({
-                        fileId: folder.id,
-                        fields: "permissions(emailAddress,type,domain,role)",
-                    });
-                    const perms = permResp.data.permissions ?? [];
-                    const hasAccess = perms.some((p) => {
-                        const pEmail = p.emailAddress?.toLowerCase();
-                        if (p.type === "user" && pEmail === userEmail)
-                            return true;
-                        if (p.type === "group" && groupForUser && pEmail === groupForUser) {
-                            return true;
-                        }
-                        return false;
-                    });
-                    if (hasAccess) {
-                        const pathNames = [...catPathNames, folder.name ?? ""];
-                        visibleRutFolders.push({
-                            id: folder.id,
-                            name: folder.name ?? "",
-                            categoria: categoriaName,
-                            modifiedTime: folder.modifiedTime ?? null,
-                            pathNames,
-                            pathString: pathNames.join(" / "),
-                        });
-                    }
-                }
-                catch (permErr) {
-                    console.error("Error leyendo permisos de carpeta RUT", folder.id, permErr);
-                }
+                const pathNames = [...catPathNames, folder.name ?? ""];
+                visibleRutFolders.push({
+                    id: folder.id,
+                    name: folder.name ?? "",
+                    categoria: categoria.name ?? "",
+                    modifiedTime: folder.modifiedTime ?? null,
+                    pathNames,
+                    pathString: pathNames.join(" / "),
+                });
             }
         }
         return res.json({

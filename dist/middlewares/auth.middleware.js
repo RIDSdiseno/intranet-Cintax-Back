@@ -10,23 +10,30 @@ require("dotenv/config");
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) {
     console.error("❌ JWT_SECRET no está definido en variables de entorno");
-    process.exit(1); // Forzamos fallo al arrancar
+    process.exit(1);
 }
 /**
  * Middleware principal para proteger rutas con Access Token.
  * - Requiere header: Authorization: Bearer <token>
  * - Valida firma y expiración del token
- * - Inyecta `req.user` (con todos los campos del payload, incl. roles) y `req.token`
+ * - Inyecta `req.user` y `req.token`
  */
 const authGuard = (req, res, next) => {
     const authHeader = req.headers?.authorization;
     if (!authHeader?.startsWith("Bearer ")) {
         return res.status(401).json({ error: "No autenticado (falta token)" });
     }
-    const token = authHeader.slice(7); // quitar "Bearer "
+    const token = authHeader.slice(7);
     try {
-        // 👇 Aquí usamos AuthJwtPayload completo (incluye isSupervisorOrAdmin si venía en el token)
         const payload = jsonwebtoken_1.default.verify(token, JWT_SECRET);
+        // ✅ hardening mínimo: si no viene role, lo normalizamos a AGENTE
+        if (!payload.role) {
+            payload.role = "AGENTE";
+        }
+        // ✅ también puedes recalcular flags aquí si quieres consistencia
+        payload.isAdmin = payload.role === "ADMIN";
+        payload.isSupervisorOrAdmin =
+            payload.role === "ADMIN" || payload.role === "SUPERVISOR";
         req.user = payload;
         req.token = token;
         return next();
@@ -46,22 +53,17 @@ const authGuard = (req, res, next) => {
 exports.authGuard = authGuard;
 /**
  * Middleware extra:
- * Requiere que el usuario logueado sea supervisor o admin (según flag del token)
+ * Requiere que el usuario logueado sea supervisor o admin
  * Úsalo DESPUÉS de `authGuard`.
- *
- * Ejemplo:
- *   router.get(
- *     "/tareas/supervision/resumen",
- *     authGuard,
- *     requireSupervisorOrAdmin,
- *     TareasController.getResumenSupervision
- *   );
  */
 const requireSupervisorOrAdmin = (req, res, next) => {
     if (!req.user) {
         return res.status(401).json({ error: "No autenticado" });
     }
-    if (!req.user.isSupervisorOrAdmin) {
+    const ok = req.user.role === "ADMIN" ||
+        req.user.role === "SUPERVISOR" ||
+        req.user.isSupervisorOrAdmin === true;
+    if (!ok) {
         return res.status(403).json({
             error: "No tienes permisos para acceder a esta sección (solo supervisores/admin)",
         });
