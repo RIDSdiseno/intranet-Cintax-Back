@@ -20,6 +20,7 @@ import {
   upsertClienteTareaExclusion,
   eliminarPlantillaConTareas,
   getTareasAsignadasPorClienteYTrabajador,
+  getTareasPorRuts,
 } from "../controllers/tareas.Controller";
 
 // ✅ Controlador de métricas
@@ -47,6 +48,9 @@ router.get("/mis-ruts", requireAuth, getMisRuts);
 
 // Tareas por RUT
 router.get("/por-rut/:rut", requireAuth, getTareasPorRut);
+
+router.post("/por-ruts", requireAuth, getTareasPorRuts);
+
 
 // =====================
 // Plantillas

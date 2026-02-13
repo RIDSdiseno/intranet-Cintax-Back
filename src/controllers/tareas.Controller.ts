@@ -175,65 +175,93 @@ export const crearPlantilla = async (req: AuthRequest, res: Response) => {
   try {
     if (!req.user?.id) return res.status(401).json({ message: "No autorizado" });
 
-    const {
-      area,
-      nombre,
-      detalle,
-      frecuencia,
-      presentacion,
-      frecuenciaTexto,
-      plazoMaximoTexto,
-      diaMesVencimiento,
-      diaSemanaVencimiento,
-      responsableDefaultId,
-      codigoDocumento,
-      requiereDrive,
-      activo,
-    } = req.body as {
-      area?: Area;
-      nombre?: string;
-      detalle?: string;
-      frecuencia?: "MENSUAL" | "SEMANAL" | "UNICA";
-      presentacion?: "CLIENTE" | "INTERNO";
-      frecuenciaTexto?: string | null;
-      plazoMaximoTexto?: string | null;
-      diaMesVencimiento?: number | null;
-      diaSemanaVencimiento?: number | null;
-      responsableDefaultId?: number | null;
-      codigoDocumento?: string | null;
-      requiereDrive?: boolean | null;
-      activo?: boolean | null;
-    };
+    const b = req.body ?? {};
 
-    if (!area) return res.status(400).json({ message: "area es obligatoria" });
-    if (!nombre?.trim()) return res.status(400).json({ message: "nombre es obligatorio" });
-    if (!detalle?.trim()) return res.status(400).json({ message: "detalle es obligatorio" });
-    if (!frecuencia) return res.status(400).json({ message: "frecuencia es obligatoria" });
-    if (!presentacion) return res.status(400).json({ message: "presentacion es obligatoria" });
+    const area = String(b.area ?? "").trim();
+    const nombre = String(b.nombre ?? "").trim();
+    const detalle = String(b.detalle ?? "").trim();
 
-    // Validaciones extra simples por vencimiento
-    if (frecuencia === "MENSUAL" && (diaMesVencimiento == null || diaMesVencimiento < 1 || diaMesVencimiento > 31)) {
-      return res.status(400).json({ message: "diaMesVencimiento requerido (1-31) cuando frecuencia es MENSUAL" });
+    const frecuencia = String(b.frecuencia ?? "").trim();      // "MENSUAL" | "SEMANAL" | "UNICA"
+    const presentacion = String(b.presentacion ?? "").trim();  // "CLIENTE" | "INTERNO"
+
+    const frecuenciaTexto = b.frecuenciaTexto != null ? String(b.frecuenciaTexto) : null;
+    const plazoMaximoTexto = b.plazoMaximoTexto != null ? String(b.plazoMaximoTexto) : null;
+
+    const diaMesVencimiento =
+      b.diaMesVencimiento === "" || b.diaMesVencimiento == null
+        ? null
+        : Number(b.diaMesVencimiento);
+
+    const diaSemanaVencimiento =
+      b.diaSemanaVencimiento === "" || b.diaSemanaVencimiento == null
+        ? null
+        : Number(b.diaSemanaVencimiento);
+
+    const responsableDefaultId =
+      b.responsableDefaultId === "" || b.responsableDefaultId == null
+        ? null
+        : Number(b.responsableDefaultId);
+
+    const codigoDocumento = b.codigoDocumento != null && String(b.codigoDocumento).trim() !== ""
+      ? String(b.codigoDocumento).trim()
+      : null;
+
+    const requiereDrive =
+      typeof b.requiereDrive === "boolean"
+        ? b.requiereDrive
+        : b.requiereDrive == null
+          ? true
+          : String(b.requiereDrive).toLowerCase() === "true";
+
+    const activo =
+      typeof b.activo === "boolean"
+        ? b.activo
+        : b.activo == null
+          ? true
+          : String(b.activo).toLowerCase() === "true";
+
+    // ---- Validaciones duras de enum (evita 500 por Prisma) ----
+    const areasValidas = new Set(["CONTA", "RRHH", "FINANZAS", "LOGISTICA"]); // ajusta a TU enum real
+    const frecuenciasValidas = new Set(["MENSUAL", "SEMANAL", "UNICA"]);
+    const presentacionesValidas = new Set(["CLIENTE", "INTERNO"]);
+
+    if (!areasValidas.has(area)) return res.status(400).json({ message: "area inválida" });
+    if (!nombre) return res.status(400).json({ message: "nombre es obligatorio" });
+    if (!detalle) return res.status(400).json({ message: "detalle es obligatorio" });
+    if (!frecuenciasValidas.has(frecuencia)) return res.status(400).json({ message: "frecuencia inválida" });
+    if (!presentacionesValidas.has(presentacion)) return res.status(400).json({ message: "presentacion inválida" });
+
+    if (frecuencia === "MENSUAL") {
+      if (!Number.isFinite(diaMesVencimiento!) || diaMesVencimiento! < 1 || diaMesVencimiento! > 31) {
+        return res.status(400).json({ message: "diaMesVencimiento requerido (1-31) cuando frecuencia es MENSUAL" });
+      }
     }
-    if (frecuencia === "SEMANAL" && (diaSemanaVencimiento == null || diaSemanaVencimiento < 1 || diaSemanaVencimiento > 7)) {
-      return res.status(400).json({ message: "diaSemanaVencimiento requerido (1-7) cuando frecuencia es SEMANAL" });
+
+    if (frecuencia === "SEMANAL") {
+      if (!Number.isFinite(diaSemanaVencimiento!) || diaSemanaVencimiento! < 1 || diaSemanaVencimiento! > 7) {
+        return res.status(400).json({ message: "diaSemanaVencimiento requerido (1-7) cuando frecuencia es SEMANAL" });
+      }
+    }
+
+    if (responsableDefaultId != null && !Number.isFinite(responsableDefaultId)) {
+      return res.status(400).json({ message: "responsableDefaultId inválido" });
     }
 
     const nueva = await prisma.tareaPlantilla.create({
       data: {
-        area,
-        nombre: nombre.trim(),
-        detalle: detalle.trim(),
-        frecuencia,
-        presentacion,
-        frecuenciaTexto: frecuenciaTexto ?? null,
-        plazoMaximoTexto: plazoMaximoTexto ?? null,
-        diaMesVencimiento: diaMesVencimiento ?? null,
-        diaSemanaVencimiento: diaSemanaVencimiento ?? null,
-        responsableDefaultId: responsableDefaultId ?? null,
-        codigoDocumento: codigoDocumento ?? null,
-        requiereDrive: requiereDrive ?? true,
-        activo: activo ?? true,
+        area: area as any,
+        nombre,
+        detalle,
+        frecuencia: frecuencia as any,
+        presentacion: presentacion as any,
+        frecuenciaTexto,
+        plazoMaximoTexto,
+        diaMesVencimiento,
+        diaSemanaVencimiento,
+        responsableDefaultId,
+        codigoDocumento,
+        requiereDrive,
+        activo,
       },
     });
 
@@ -243,6 +271,7 @@ export const crearPlantilla = async (req: AuthRequest, res: Response) => {
     return res.status(500).json({ message: "Error creando plantilla" });
   }
 };
+
 
 
 // ---------------------------------------------------------------------------
@@ -942,3 +971,81 @@ export const getTareasAsignadasPorClienteYTrabajador = async (
     return res.status(500).json({ message: "Error interno" });
   }
 };
+
+// ---------------------------------------------------------------------------
+// 2.B) Obtener tareas por MUCHOS RUTs (BULK)
+//    POST /tareas/por-ruts
+//    body: { trabajadorId?, ruts: string[], anio?, mes? }
+// ---------------------------------------------------------------------------
+export const getTareasPorRuts = async (req: AuthRequest, res: Response) => {
+  try {
+    if (!req.user?.id) return res.status(401).json({ message: "No autorizado" });
+
+    const body = (req.body ?? {}) as {
+      trabajadorId?: number | string;
+      ruts?: string[];
+      anio?: number | string;
+      mes?: number | string;
+    };
+
+    // trabajadorId: si viene en body úsalo, si no usa el del token
+    let trabajadorId: number;
+    if (body.trabajadorId != null) {
+      const parsed = Number(body.trabajadorId);
+      if (Number.isNaN(parsed)) {
+        return res.status(400).json({ message: "trabajadorId inválido" });
+      }
+      trabajadorId = parsed;
+    } else {
+      trabajadorId = req.user.id;
+    }
+
+    const ruts = Array.from(
+      new Set((body.ruts ?? []).map((r) => String(r ?? "").trim()).filter(Boolean))
+    );
+
+    if (ruts.length === 0) {
+      return res.json({ tareas: [] });
+    }
+
+    // Filtro opcional por año/mes
+    let fechaFiltro: { gte: Date; lt: Date } | undefined;
+    if (body.anio != null && body.mes != null) {
+      const year = Number(body.anio);
+      const month = Number(body.mes);
+
+      if (Number.isNaN(year) || Number.isNaN(month) || month < 1 || month > 12) {
+        return res.status(400).json({ message: "anio/mes inválidos. Ej: { anio: 2025, mes: 12 }" });
+      }
+
+      const inicio = new Date(year, month - 1, 1);
+      const fin = new Date(year, month, 1);
+      fechaFiltro = { gte: inicio, lt: fin };
+    }
+
+    const where: any = {
+      trabajadorId,
+      rutCliente: { in: ruts },
+      estado: { not: "NO_APLICA" },
+    };
+    if (fechaFiltro) where.fechaProgramada = fechaFiltro;
+
+    // ✅ IMPORTANTE: select en vez de include completo (menos payload)
+    const tareas = await prisma.tareaAsignada.findMany({
+      where,
+      orderBy: [{ rutCliente: "asc" }, { fechaProgramada: "asc" }],
+      include: {
+        tareaPlantilla: true,
+        asignado: { select: { id_trabajador: true, nombre: true, email: true } },
+      },
+    });
+
+    return res.json({ tareas });
+  } catch (error) {
+    console.error("[getTareasPorRuts] error:", error);
+    return res.status(500).json({ message: "Error obteniendo tareas por ruts" });
+  }
+};
+
+
+
