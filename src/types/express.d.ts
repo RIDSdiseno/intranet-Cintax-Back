@@ -21,5 +21,6 @@ declare module "express-serve-static-core" {
       isAdmin?: boolean;
     };
     token?: string;
+    requestId?: string;
   }
 }

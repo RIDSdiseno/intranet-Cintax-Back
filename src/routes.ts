@@ -5,6 +5,7 @@ import { Router } from "express";
 import authRoutes from "./routes/auth.route";
 import googleRoutes from "./routes/google.route";
 import clienteRoutes from "./routes/cliente.routes";
+import ticketsRoutes from "./modules/tickets/tickets.routes";
 
 const router = Router();
 
@@ -29,6 +30,7 @@ router.use("/drive", googleRoutes);
 // router.use("/tareas", tareasRoutes);
 
 router.use("/clientes", clienteRoutes);
+router.use("/tickets", ticketsRoutes);
 
 
 export default router;

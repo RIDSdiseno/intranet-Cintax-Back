@@ -627,6 +627,13 @@ const createTicket = async (req, res) => {
                 trabajadorId,
             },
         });
+        console.info("ticket_created", {
+            id_ticket: ticket.id_ticket,
+            categoria: ticket.categoria,
+            estado: ticket.estado,
+            prioridad: ticket.prioridad,
+            createdAt: ticket.createdAt,
+        });
         return res.status(201).json(ticket);
     }
     catch (err) {

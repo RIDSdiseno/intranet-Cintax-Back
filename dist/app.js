@@ -34,14 +34,30 @@ exports.app.set("trust proxy", 1);
 const ENABLE_TASK_CRON = process.env.ENABLE_TASK_CRON === "true";
 const ENABLE_GROUPS_CRON = process.env.ENABLE_GROUPS_CRON === "true";
 const ENABLE_NOTI_CRON = process.env.ENABLE_NOTI_CRON !== "false"; // default true
+const allowedOrigins = new Set((process.env.CORS_ORIGINS || "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean));
+const corsCredentials = String(process.env.CORS_CREDENTIALS ?? process.env.AUTH_COOKIE ?? "false") ===
+    "true";
+const corsForbiddenError = Object.assign(new Error("Not allowed by CORS"), {
+    status: 403,
+});
 const corsOptions = {
-    origin: ["https://intranet-cintax.netlify.app", "http://localhost:5173"],
+    origin: (origin, callback) => {
+        if (!origin)
+            return callback(null, true);
+        if (allowedOrigins.has(origin))
+            return callback(null, true);
+        return callback(corsForbiddenError);
+    },
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    credentials: true,
+    credentials: corsCredentials,
     allowedHeaders: ["Content-Type", "Authorization"],
     optionsSuccessStatus: 204,
 };
 exports.app.use((0, cors_1.default)(corsOptions));
+exports.app.options(/^\/api\/.*$/, (0, cors_1.default)(corsOptions));
 exports.app.use((0, cookie_parser_1.default)());
 exports.app.use(express_1.default.json({ limit: "20mb" }));
 exports.app.use((0, morgan_1.default)("dev"));

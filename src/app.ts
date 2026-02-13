@@ -10,6 +10,7 @@ import tareasRoutes from "./routes/tareas.routes";
 import dashboardRoutes from "./routes/dashboard.routes";
 
 import { errorHandler } from "./middlewares/error.middleware.js";
+import { requestIdMiddleware } from "./middlewares/requestId.middleware";
 import "dotenv/config";
 
 import { oauth2Client } from "./services/googleDrive";
@@ -43,19 +44,39 @@ const ENABLE_TASK_CRON = process.env.ENABLE_TASK_CRON === "true";
 const ENABLE_GROUPS_CRON = process.env.ENABLE_GROUPS_CRON === "true";
 const ENABLE_NOTI_CRON = process.env.ENABLE_NOTI_CRON !== "false"; // default true
 
+const allowedOrigins = new Set(
+  (process.env.CORS_ORIGINS || "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean)
+);
+
+const corsCredentials =
+  String(process.env.CORS_CREDENTIALS ?? process.env.AUTH_COOKIE ?? "false") ===
+  "true";
+const corsForbiddenError = Object.assign(new Error("Not allowed by CORS"), {
+  status: 403,
+});
+
 const corsOptions: cors.CorsOptions = {
-  origin: ["https://intranet-cintax.netlify.app", "http://localhost:5173"],
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.has(origin)) return callback(null, true);
+    return callback(corsForbiddenError);
+  },
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  credentials: true,
+  credentials: corsCredentials,
   allowedHeaders: ["Content-Type", "Authorization"],
   optionsSuccessStatus: 204,
 };
 
 app.use(cors(corsOptions));
+app.options(/^\/api\/.*$/, cors(corsOptions));
 
 
 app.use(cookieParser());
 app.use(express.json({ limit: "20mb" }));
+app.use(requestIdMiddleware);
 app.use(morgan("dev"));
 
 // 🔍 Ruta de debug de versión
