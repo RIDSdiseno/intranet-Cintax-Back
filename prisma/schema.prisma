@@ -21,11 +21,13 @@ model Trabajador {
   tipoRelacion       TipoRelacion?
   carpetaDriveCodigo String?          @db.VarChar(50)
 
-  Notificacion       Notificacion[]   @relation("TrabajadorNotificaciones")
   refreshTokens      RefreshToken[]
   tareasAsignadas    TareaAsignada[]  @relation("TrabajadorTareas")
   tareasDefault      TareaPlantilla[] @relation("TareaResponsableDefault")
   tickets            Ticket[]
+
+  // ✅ NUEVO: mensajes creados por el trabajador (autor)
+  ticketMessages     TicketMessage[]  @relation("TicketMessageAuthor")
 }
 
 model RefreshToken {
@@ -51,6 +53,45 @@ model Ticket {
   updatedAt      DateTime    @updatedAt
 
   trabajador     Trabajador? @relation(fields: [trabajadorId], references: [id_trabajador])
+
+  // ✅ NUEVO: hilo/conversación del ticket
+  messages       TicketMessage[] @relation("TicketMessages")
+}
+
+model TicketMessage {
+  id                 Int               @id @default(autoincrement())
+  ticketId           Int
+  authorTrabajadorId Int?
+  type               TicketMessageType
+  toEmail            String?
+  cc                 String?
+  bcc                String?
+  subject            String?
+  bodyHtml           String
+  bodyText           String?
+  createdAt          DateTime          @default(now())
+
+  ticket             Ticket            @relation("TicketMessages", fields: [ticketId], references: [id_ticket], onDelete: Cascade)
+  author             Trabajador?       @relation("TicketMessageAuthor", fields: [authorTrabajadorId], references: [id_trabajador], onDelete: SetNull)
+
+  attachments        TicketAttachment[]
+
+  @@index([ticketId, createdAt])
+  @@index([authorTrabajadorId])
+}
+
+model TicketAttachment {
+  id        Int           @id @default(autoincrement())
+  messageId Int
+  filename  String
+  mimeType  String
+  size      Int
+  url       String
+  createdAt DateTime      @default(now())
+
+  message   TicketMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([messageId])
 }
 
 model TareaPlantilla {
@@ -72,9 +113,6 @@ model TareaPlantilla {
   tareasAsignadas      TareaAsignada[]
   responsableDefault   Trabajador?     @relation("TareaResponsableDefault", fields: [responsableDefaultId], references: [id_trabajador])
 
-  // ✅ relación con exclusiones
-  exclusiones          ClienteTareaExclusion[]
-
   @@index([area])
   @@index([responsableDefaultId])
 }
@@ -92,12 +130,9 @@ model TareaAsignada {
   rutCliente         String?
   driveTareaFolderId String?        @db.VarChar(255)
 
-  Notificacion       Notificacion[] @relation("TareaAsignadaNotificaciones")
   tareaPlantilla     TareaPlantilla @relation(fields: [tareaPlantillaId], references: [id_tarea_plantilla])
   asignado           Trabajador?    @relation("TrabajadorTareas", fields: [trabajadorId], references: [id_trabajador])
 
-  // ✅ evita duplicar la misma tarea para el mismo cliente y misma fecha
-  @@unique([tareaPlantillaId, rutCliente, fechaProgramada])
   @@index([trabajadorId])
   @@index([rutCliente])
   @@index([tareaPlantillaId])
@@ -105,10 +140,7 @@ model TareaAsignada {
 
 model Cliente {
   id            Int      @id @default(autoincrement())
-
-  // ✅ CLAVE NATURAL: RUT único (permite upsert y FK lógica)
-  rut           String   @unique
-
+  rut           String
   razonSocial   String
   alias         String?
   activo        Boolean  @default(true)
@@ -117,46 +149,33 @@ model Cliente {
   agenteId      Int?
   codigoCartera String?
 
-  // ✅ relación con exclusiones por rut
-  exclusiones   ClienteTareaExclusion[]
-
   @@index([agenteId])
   @@index([codigoCartera])
 }
 
-model ClienteTareaExclusion {
-  id               Int       @id @default(autoincrement())
-
-  // FK lógica hacia Cliente.rut (que ahora es @unique)
-  rutCliente       String
-  tareaPlantillaId Int
-
-  activa           Boolean   @default(true)
-  motivo           String?   @db.VarChar(500)
-  desdeFecha       DateTime?
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
-
-  // ✅ relaciones
-  cliente          Cliente        @relation(fields: [rutCliente], references: [rut], onDelete: Cascade)
-  tareaPlantilla   TareaPlantilla @relation(fields: [tareaPlantillaId], references: [id_tarea_plantilla], onDelete: Cascade)
-
-  @@unique([rutCliente, tareaPlantillaId])
-  @@index([rutCliente])
-  @@index([tareaPlantillaId])
-}
-
 model Notificacion {
-  id           Int      @id @default(autoincrement())
   mensaje      String
   leida        Boolean  @default(false)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
   trabajadorId Int
   tareaId      Int
+  id           Int      @id @default(autoincrement())
+}
 
-  tarea        TareaAsignada @relation("TareaAsignadaNotificaciones", fields: [tareaId], references: [id_tarea_asignada], onDelete: Cascade)
-  trabajador   Trabajador    @relation("TrabajadorNotificaciones", fields: [trabajadorId], references: [id_trabajador], onDelete: Cascade)
+model ClienteTareaExclusion {
+  id               Int       @id @default(autoincrement())
+  rutCliente       String
+  tareaPlantillaId Int
+  activa           Boolean   @default(true)
+  motivo           String?   @db.VarChar(500)
+  desdeFecha       DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime
+
+  @@unique([rutCliente, tareaPlantillaId])
+  @@index([rutCliente])
+  @@index([tareaPlantillaId])
 }
 
 enum TipoRelacion {
@@ -189,4 +208,10 @@ enum FrecuenciaTarea {
   MENSUAL
   SEMANAL
   UNICA
+}
+
+enum TicketMessageType {
+  PUBLIC_REPLY
+  INTERNAL_NOTE
+  FORWARD
 }

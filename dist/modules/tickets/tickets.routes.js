@@ -1,0 +1,17 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const express_1 = require("express");
+const auth_middleware_1 = require("../../middlewares/auth.middleware");
+const tickets_controller_1 = require("./tickets.controller");
+const r = (0, express_1.Router)();
+r.get("/groups", auth_middleware_1.authGuard, tickets_controller_1.listTicketGroups);
+r.get("/", auth_middleware_1.authGuard, tickets_controller_1.listTickets);
+r.get("/inbox", auth_middleware_1.authGuard, tickets_controller_1.listTicketsInbox);
+r.get("/inbox/diagnostic", auth_middleware_1.authGuard, tickets_controller_1.diagnosticTicketsInbox);
+r.post("/sync", auth_middleware_1.authGuard, tickets_controller_1.syncTickets);
+r.get("/:id", auth_middleware_1.authGuard, tickets_controller_1.getTicketDetail);
+r.get("/:id/messages", auth_middleware_1.authGuard, tickets_controller_1.listTicketMessages);
+r.post("/:id/messages", auth_middleware_1.authGuard, tickets_controller_1.createTicketMessage);
+r.post("/:id/reply", auth_middleware_1.authGuard, tickets_controller_1.replyTicketStub);
+r.patch("/:id", auth_middleware_1.authGuard, tickets_controller_1.updateTicket);
+exports.default = r;

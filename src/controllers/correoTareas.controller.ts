@@ -25,7 +25,8 @@ export class CorreoTareasController {
           mimetype: f.mimetype,
           hasBuffer: !!f.buffer,
         }))
-      );
+      ); 
+  
 
       await sendEmailAsUser({
         fromUserEmail: trabajadorEmail,

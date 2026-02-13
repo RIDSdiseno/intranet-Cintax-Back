@@ -750,6 +750,14 @@ export const createTicket = async (req: Request, res: Response) => {
       },
     });
 
+    console.info("ticket_created", {
+      id_ticket: ticket.id_ticket,
+      categoria: ticket.categoria,
+      estado: ticket.estado,
+      prioridad: ticket.prioridad,
+      createdAt: ticket.createdAt,
+    });
+
     return res.status(201).json(ticket);
   } catch (err) {
     console.error("createTicket error:", err);
