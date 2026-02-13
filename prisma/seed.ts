@@ -45,6 +45,7 @@ const WORKERS: WorkerSeed[] = [
     nombre: "Admin Cintax Seed",
     areaInterna: Area.ADMIN,
   },
+  
   {
     email: "conta.agent@cintax.cl",
     nombre: "Agente Conta Seed",
