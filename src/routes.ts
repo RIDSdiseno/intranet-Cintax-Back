@@ -1,11 +1,11 @@
-// src/routes.ts
 import { Router } from "express";
 
 // Rutas hijas
 import authRoutes from "./routes/auth.route";
 import googleRoutes from "./routes/google.route";
 import clienteRoutes from "./routes/cliente.routes";
-import ticketsRoutes from "./modules/tickets/tickets.routes";
+import ticketsRoutes from "./routes/tickets.routes";
+import mailboxRoutes from "./routes/mailbox.routes";
 
 const router = Router();
 
@@ -26,11 +26,19 @@ router.use("/auth", authRoutes);
 // =============================
 router.use("/drive", googleRoutes);
 
-// 👇 OJO: aquí YA NO montamos /tareas
-// router.use("/tareas", tareasRoutes);
-
+// =============================
+//  CLIENTES
+// =============================
 router.use("/clientes", clienteRoutes);
+
+// =============================
+//  TICKETS (incluye /email)
+// =============================
 router.use("/tickets", ticketsRoutes);
 
+// =============================
+//  MAILBOX (lectura Gmail)
+// =============================
+router.use("/mailbox", mailboxRoutes);
 
 export default router;

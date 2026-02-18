@@ -26,7 +26,6 @@ model Trabajador {
   tareasDefault      TareaPlantilla[] @relation("TareaResponsableDefault")
   tickets            Ticket[]
 
-  // ✅ NUEVO: mensajes creados por el trabajador (autor)
   ticketMessages     TicketMessage[]  @relation("TicketMessageAuthor")
 }
 
@@ -47,22 +46,38 @@ model Ticket {
   estado         String
   prioridad      Int?
   requesterEmail String
+
   freshdeskId    Int?        @unique
   trabajadorId   Int?
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @updatedAt
 
-  trabajador     Trabajador? @relation(fields: [trabajadorId], references: [id_trabajador])
+  gmailThreadId  String?     @unique
+  source         TicketSource @default(MANUAL)
 
-  // ✅ NUEVO: hilo/conversación del ticket
+  // ✅ NUEVO: Grupo/Área asignada al ticket (bandeja)
+  areaAsignada   Area?
+
+  trabajador     Trabajador? @relation(fields: [trabajadorId], references: [id_trabajador])
   messages       TicketMessage[] @relation("TicketMessages")
+
+  @@index([createdAt])
+  @@index([estado])
+  @@index([categoria])
+  @@index([areaAsignada])
 }
+
 
 model TicketMessage {
   id                 Int               @id @default(autoincrement())
   ticketId           Int
   authorTrabajadorId Int?
   type               TicketMessageType
+  direction          TicketMessageDirection @default(INBOUND)
+
+  // ✅ Nuevo: para deduplicar mensajes Gmail
+  gmailMessageId     String?           @unique
+
   toEmail            String?
   cc                 String?
   bcc                String?
@@ -214,4 +229,15 @@ enum TicketMessageType {
   PUBLIC_REPLY
   INTERNAL_NOTE
   FORWARD
+}
+
+enum TicketSource {
+  MANUAL
+  EMAIL
+  FRESHDESK
+}
+
+enum TicketMessageDirection {
+  INBOUND
+  OUTBOUND
 }

@@ -28,10 +28,9 @@ import {
 } from "@prisma/client";
 import { syncAreasFromGroupsCore } from "./controllers/auth.controller";
 
-// ✅ NUEVO JOB (día 30 -> genera mes siguiente)
 import { generarTareasMesSiguiente } from "./jobs/generarTareasMesSiguiente";
-
 import tareasMasivoRoutes from "./routes/tareas-masivo.routes";
+
 // 👇 SUPER IMPORTANTE: log de versión
 console.log("⚙️ [APP] Cargando app.ts **CINTAX TAREAS V5**");
 
@@ -44,8 +43,22 @@ const ENABLE_TASK_CRON = process.env.ENABLE_TASK_CRON === "true";
 const ENABLE_GROUPS_CRON = process.env.ENABLE_GROUPS_CRON === "true";
 const ENABLE_NOTI_CRON = process.env.ENABLE_NOTI_CRON !== "false"; // default true
 
+// =============================
+// ✅ CORS (robusto)
+// =============================
+
+// fallback DEV si CORS_ORIGINS no está seteado
+const defaultDevOrigins = ["http://localhost:5173", "http://localhost:4173"];
+
+const rawOrigins =
+  process.env.CORS_ORIGINS && process.env.CORS_ORIGINS.trim().length > 0
+    ? process.env.CORS_ORIGINS
+    : process.env.NODE_ENV !== "production"
+    ? defaultDevOrigins.join(",")
+    : "";
+
 const allowedOrigins = new Set(
-  (process.env.CORS_ORIGINS || "")
+  rawOrigins
     .split(",")
     .map((origin) => origin.trim())
     .filter(Boolean)
@@ -54,14 +67,20 @@ const allowedOrigins = new Set(
 const corsCredentials =
   String(process.env.CORS_CREDENTIALS ?? process.env.AUTH_COOKIE ?? "false") ===
   "true";
+
 const corsForbiddenError = Object.assign(new Error("Not allowed by CORS"), {
   status: 403,
 });
 
 const corsOptions: cors.CorsOptions = {
   origin: (origin, callback) => {
+    // Permite requests sin Origin (Postman/cURL/server-to-server)
     if (!origin) return callback(null, true);
+
     if (allowedOrigins.has(origin)) return callback(null, true);
+
+    // Log útil para debug
+    console.warn("[CORS] Bloqueado origin:", origin, "Permitidos:", [...allowedOrigins]);
     return callback(corsForbiddenError);
   },
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
@@ -70,10 +89,16 @@ const corsOptions: cors.CorsOptions = {
   optionsSuccessStatus: 204,
 };
 
+// ✅ CORS primero (antes de cualquier ruta)
 app.use(cors(corsOptions));
-app.options(/^\/api\/.*$/, cors(corsOptions));
+
+// ✅ Preflight global (más robusto que regex)
+app.options(/.*/, cors(corsOptions));
 
 
+// =============================
+// Middlewares base
+// =============================
 app.use(cookieParser());
 app.use(express.json({ limit: "20mb" }));
 app.use(requestIdMiddleware);
@@ -81,17 +106,24 @@ app.use(morgan("dev"));
 
 // 🔍 Ruta de debug de versión
 app.get("/api/debug-version", (_req, res) => {
-  res.json({ ok: true, version: "cintax-tareas-v5" });
+  res.json({
+    ok: true,
+    version: "cintax-tareas-v5",
+    cors: {
+      credentials: corsCredentials,
+      origins: [...allowedOrigins],
+    },
+  });
 });
 
 // =============================
 // RUTAS API
 // =============================
+
 // ✅ Si tu routes.js tiene /auth, /clientes, etc.
 app.use("/api", routes);
 
-// ✅ Trabajadores (incluye GET /trabajadores y PATCH /trabajadores/:id)
-//    (internamente el router ya tiene authGuard / requireSupervisorOrAdmin)
+// ✅ Trabajadores
 app.use("/api", trabajadorRoutes);
 
 // ✅ Tareas
@@ -103,6 +135,7 @@ app.use("/api/dashboard", dashboardRoutes);
 // ✅ Notificaciones
 app.use("/api/notificaciones", notificacionesRoutes);
 
+// ✅ Tareas masivo (nota: esto queda en /api/tareas/*)
 app.use("/api/tareas", tareasMasivoRoutes);
 
 // Debug cookies (útil)
@@ -289,8 +322,6 @@ app.get("/debug/test-notificaciones", async (_req: Request, res: Response) => {
 
 // ======================================================
 // ✅ ENDPOINT MANUAL: genera tareas MES SIGUIENTE
-// - default: solo corre si corresponde (día 30 o último)
-// - force=true: forzar ejecución como si fuera día 30
 // ======================================================
 app.post("/api/tareas/generar-mes-siguiente", async (req, res) => {
   try {
@@ -326,14 +357,11 @@ app.post("/api/tareas/generar-mes-siguiente", async (req, res) => {
 
 // ======================================================
 // ✅ CRON TAREAS: corre TODOS los días (02:05)
-// pero el job decide si corresponde (día 30 / último día)
 // ======================================================
 if (ENABLE_TASK_CRON) {
   cron.schedule("5 2 * * *", async () => {
     try {
-      console.log(
-        "[CRON] Tick: generar tareas mes siguiente (si corresponde)..."
-      );
+      console.log("[CRON] Tick: generar tareas mes siguiente (si corresponde)...");
       const out = await generarTareasMesSiguiente(new Date());
       console.log("[CRON] OK:", out);
     } catch (e) {
@@ -352,10 +380,7 @@ if (ENABLE_NOTI_CRON) {
       await generarNotificacionesDeVencimiento();
       console.log("[CRON] OK notificaciones generadas");
     } catch (e) {
-      console.error(
-        "[CRON] Error generando notificaciones de vencimiento:",
-        e
-      );
+      console.error("[CRON] Error generando notificaciones de vencimiento:", e);
     }
   });
 }

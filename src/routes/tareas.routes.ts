@@ -9,7 +9,7 @@ import {
   getMisRuts,
   getTareasPorRut,
   getPlantillas,
-  crearPlantilla, // ✅ NUEVO: crea plantilla real
+  crearPlantilla,
   getTareasPorPlantilla,
   crearTareasDesdePlantilla,
   actualizarEstado,
@@ -20,7 +20,7 @@ import {
   upsertClienteTareaExclusion,
   eliminarPlantillaConTareas,
   getTareasAsignadasPorClienteYTrabajador,
-  getTareasPorRuts,
+  getTareasPorRuts, // POST /por-ruts
 } from "../controllers/tareas.Controller";
 
 // ✅ Controlador de métricas
@@ -35,51 +35,51 @@ const router = Router();
 const upload = multer();
 
 // Multer para adjuntos en correo
-const uploadCorreo = multer({
-  storage: multer.memoryStorage(),
-});
+const uploadCorreo = multer({ storage: multer.memoryStorage() });
 
 // =====================
-// Rutas de tareas base
+// Rutas base de Tareas
 // =====================
 
-// RUTs del trabajador
+// RUTs del trabajador (front: /tareas/mis-ruts?trabajadorId=ID)
 router.get("/mis-ruts", requireAuth, getMisRuts);
 
-// Tareas por RUT
+// Tareas por 1 RUT
 router.get("/por-rut/:rut", requireAuth, getTareasPorRut);
 
+// ✅ Bulk tareas por lista de ruts (front: POST /tareas/por-ruts)
 router.post("/por-ruts", requireAuth, getTareasPorRuts);
-
 
 // =====================
 // Plantillas
 // =====================
 
-// Listar plantillas (para el dropdown)
+// Listar plantillas (dropdown)
 router.get("/plantillas", requireAuth, getPlantillas);
 
-// ✅ Crear plantilla (lo que hace tu botón "Guardar Tarea Plantilla")
+// Crear plantilla
 router.post("/plantillas", requireAuth, crearPlantilla);
 
 // Tareas por plantilla
 router.get("/por-plantilla/:idPlantilla", requireAuth, getTareasPorPlantilla);
 
+// Eliminar plantilla con tareas
+router.delete("/plantillas/:id", requireAuth, eliminarPlantillaConTareas);
+
 // =====================
 // Asignación masiva desde plantilla
 // =====================
 
-// ✅ Crear tareas asignadas (1 o muchas empresas) desde una plantilla existente
 router.post("/crear-desde-plantilla", requireAuth, crearTareasDesdePlantilla);
 
 // =====================
-// Tareas asignadas (estado / resumen)
+// Tareas asignadas (estado / archivos / resumen)
 // =====================
 
 // Cambiar estado
 router.patch("/:id/estado", requireAuth, actualizarEstado);
 
-// Resumen supervisión
+// Resumen supervisión (front: /tareas/supervision/resumen)
 router.get("/supervision/resumen", requireAuth, getResumenSupervision);
 
 // Asegurar carpeta Drive para tarea (debug/manual)
@@ -97,9 +97,21 @@ router.get("/supervision/metricas", requireAuth, getMetricasSupervision);
 
 // Métricas detalladas por agente
 router.get("/supervision/metricas/agente/:id", requireAuth, getMetricasAgente);
-//estado de tareas "no aplica y editor de ateras"
-router.get("/plantillas-con-aplica", listPlantillasConAplicaPorCliente);
-router.patch("/exclusion", upsertClienteTareaExclusion);
+
+// =====================
+// Estado "no aplica" + editor de tareas
+// (ANTES estaban sin auth → los dejo protegidos)
+// =====================
+
+router.get("/plantillas-con-aplica", requireAuth, listPlantillasConAplicaPorCliente);
+router.patch("/exclusion", requireAuth, upsertClienteTareaExclusion);
+
+// =====================
+// Tareas asignadas por cliente y trabajador
+// (ANTES estaba sin auth; normalmente debe ir protegido)
+// =====================
+
+router.get("/asignadas", requireAuth, getTareasAsignadasPorClienteYTrabajador);
 
 // =====================
 // Correo (adjuntos)
@@ -111,9 +123,5 @@ router.post(
   uploadCorreo.array("adjuntos"),
   CorreoTareasController.enviarCorreo
 );
-
-router.delete("/plantillas/:id", requireAuth, eliminarPlantillaConTareas);
-
-router.get("/asignadas", getTareasAsignadasPorClienteYTrabajador);
 
 export default router;
