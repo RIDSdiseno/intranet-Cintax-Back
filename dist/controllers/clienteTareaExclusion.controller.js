@@ -39,18 +39,25 @@ const excluirTareaParaCliente = async (req, res) => {
         if (!tplId || Number.isNaN(tplId)) {
             return res.status(400).json({ error: "tareaPlantillaId inválido" });
         }
+        const motivoLimpio = motivo?.trim() || null;
         // Upsert exclusión activa
         const exclusion = await prisma.clienteTareaExclusion.upsert({
-            where: { rutCliente_tareaPlantillaId: { rutCliente: rut, tareaPlantillaId: tplId } },
+            where: {
+                rutCliente_tareaPlantillaId: { rutCliente: rut, tareaPlantillaId: tplId },
+            },
             create: {
                 rutCliente: rut,
                 tareaPlantillaId: tplId,
                 activa: true,
-                motivo: motivo?.trim() || null,
+                motivo: motivoLimpio,
+                // ✅ Prisma te lo exige como required
+                updatedAt: new Date(),
             },
             update: {
                 activa: true,
-                motivo: motivo?.trim() || null,
+                motivo: motivoLimpio,
+                // ✅ para mantener updatedAt consistente en update
+                updatedAt: new Date(),
             },
         });
         const doCancel = cancelarPendientes !== false; // default true
@@ -60,11 +67,13 @@ const excluirTareaParaCliente = async (req, res) => {
                 where: {
                     rutCliente: rut,
                     tareaPlantillaId: tplId,
-                    estado: { in: [client_1.EstadoTarea.PENDIENTE, client_1.EstadoTarea.EN_PROCESO, client_1.EstadoTarea.VENCIDA] },
+                    estado: {
+                        in: [client_1.EstadoTarea.PENDIENTE, client_1.EstadoTarea.EN_PROCESO, client_1.EstadoTarea.VENCIDA],
+                    },
                 },
                 data: {
                     estado: client_1.EstadoTarea.NO_APLICA,
-                    comentarios: `NO_APLICA: tarea excluida para este cliente. ${motivo?.trim() ? `Motivo: ${motivo.trim()}` : ""}`.trim(),
+                    comentarios: `NO_APLICA: tarea excluida para este cliente. ${motivoLimpio ? `Motivo: ${motivoLimpio}` : ""}`.trim(),
                 },
             });
             updatedCount = upd.count;
@@ -95,8 +104,14 @@ const reactivarTareaParaCliente = async (req, res) => {
             return res.status(400).json({ error: "tareaPlantillaId inválido" });
         }
         const updated = await prisma.clienteTareaExclusion.update({
-            where: { rutCliente_tareaPlantillaId: { rutCliente: rut, tareaPlantillaId: tplId } },
-            data: { activa: false },
+            where: {
+                rutCliente_tareaPlantillaId: { rutCliente: rut, tareaPlantillaId: tplId },
+            },
+            data: {
+                activa: false,
+                // ✅ si tu modelo requiere updatedAt siempre
+                updatedAt: new Date(),
+            },
         });
         return res.json({ message: "Exclusión desactivada", exclusion: updated });
     }
@@ -104,7 +119,9 @@ const reactivarTareaParaCliente = async (req, res) => {
         console.error("reactivarTareaParaCliente error:", err);
         // Si no existe, responde 404 “limpio”
         if (String(err?.code) === "P2025") {
-            return res.status(404).json({ error: "No existe exclusión para ese cliente/tarea" });
+            return res
+                .status(404)
+                .json({ error: "No existe exclusión para ese cliente/tarea" });
         }
         return res.status(500).json({ error: "Error interno reactivando" });
     }

@@ -347,9 +347,23 @@ const assignAgenteToCliente = async (req, res) => {
             if (!chk.ok)
                 return res.status(400).json({ error: chk.error });
         }
+        // Si viene agenteId, tomamos su carpetaDriveCodigo como codigoCartera
+        let codigoCartera = null;
+        if (agenteId !== null && agenteId !== undefined) {
+            const agente = await prisma.trabajador.findUnique({
+                where: { id_trabajador: agenteId },
+                select: { carpetaDriveCodigo: true },
+            });
+            if (!agente)
+                return res.status(400).json({ error: "Agente no encontrado" });
+            codigoCartera = agente.carpetaDriveCodigo ?? null;
+        }
         const updated = await prisma.cliente.update({
             where: { id },
-            data: { agenteId: agenteId ?? null },
+            data: {
+                agenteId: agenteId ?? null,
+                codigoCartera, // 👈 se asigna automático
+            },
             select: {
                 id: true,
                 rut: true,

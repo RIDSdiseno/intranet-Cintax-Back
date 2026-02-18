@@ -1,9 +1,10 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.updateTicket = exports.createTicketMessage = exports.listTicketMessages = exports.replyTicketStub = exports.getTicketDetail = exports.syncTickets = exports.diagnosticTicketsInbox = exports.listTicketsInbox = exports.listTickets = exports.listTicketGroups = void 0;
+exports.updateTicket = exports.createTicketMessage = exports.listTicketMessages = exports.replyTicketStub = exports.getTicketDetail = exports.syncTickets = exports.diagnosticTicketsInbox = exports.listTicketAgents = exports.listTicketsInbox = exports.listTickets = exports.listTicketGroups = void 0;
 const client_1 = require("@prisma/client");
 const tickets_service_1 = require("./tickets.service");
 const ticketAccess_1 = require("./access/ticketAccess");
+const tickets_logger_1 = require("./tickets.logger");
 function escapeHtml(input) {
     return String(input)
         .replace(/&/g, "&amp;")
@@ -18,13 +19,30 @@ function plainTextFromHtml(html) {
         .replace(/\s+/g, " ")
         .trim();
 }
+function getAuthMeta(req) {
+    return {
+        requestId: req.requestId ?? null,
+        userId: req.user?.id ?? null,
+        role: req.user?.role ?? null,
+    };
+}
 const listTicketGroups = async (req, res) => {
     try {
-        const data = await (0, tickets_service_1.getGroupsForUser)(req.user);
+        const data = await (0, tickets_service_1.getGroupsForUser)({
+            user: req.user,
+            requestId: req.requestId,
+        });
         return res.json({ ok: true, data });
     }
     catch (err) {
-        console.error("listTicketGroups error:", err);
+        const auth = getAuthMeta(req);
+        (0, tickets_logger_1.logTicketError)({
+            action: "tickets_groups",
+            requestId: auth.requestId,
+            userId: auth.userId,
+            role: auth.role,
+            error: err,
+        });
         return res.status(500).json({ ok: false, error: "Error interno" });
     }
 };
@@ -38,11 +56,19 @@ const listTickets = async (req, res) => {
             q,
             status: status ?? estado,
             priority: priority ?? prioridad,
+            requestId: req.requestId,
         });
         return res.json({ ok: true, data });
     }
     catch (err) {
-        console.error("listTickets error:", err);
+        const auth = getAuthMeta(req);
+        (0, tickets_logger_1.logTicketError)({
+            action: "tickets_list",
+            requestId: auth.requestId,
+            userId: auth.userId,
+            role: auth.role,
+            error: err,
+        });
         return res.status(500).json({ ok: false, error: "Error interno" });
     }
 };
@@ -61,15 +87,50 @@ const listTicketsInbox = async (req, res) => {
             status: status ?? estado,
             priority: priority ?? prioridad,
             limit,
+            requestId: req.requestId,
         });
         return res.json({ ok: true, data });
     }
     catch (err) {
-        console.error("listTicketsInbox error:", err);
+        const auth = getAuthMeta(req);
+        (0, tickets_logger_1.logTicketError)({
+            action: "tickets_inbox",
+            requestId: auth.requestId,
+            userId: auth.userId,
+            role: auth.role,
+            error: err,
+        });
         return res.status(500).json({ ok: false, error: "Error interno" });
     }
 };
 exports.listTicketsInbox = listTicketsInbox;
+const listTicketAgents = async (req, res) => {
+    try {
+        if (!req.user) {
+            return res.status(401).json({ ok: false, error: "No autenticado" });
+        }
+        if (!["ADMIN", "SUPERVISOR", "AGENTE"].includes(req.user.role)) {
+            return res.status(403).json({ ok: false, error: "Sin permisos" });
+        }
+        const data = await (0, tickets_service_1.getTicketAgentsForUser)({
+            user: req.user,
+            requestId: req.requestId,
+        });
+        return res.json({ ok: true, data });
+    }
+    catch (err) {
+        const auth = getAuthMeta(req);
+        (0, tickets_logger_1.logTicketError)({
+            action: "tickets_agents_list",
+            requestId: auth.requestId,
+            userId: auth.userId,
+            role: auth.role,
+            error: err,
+        });
+        return res.status(500).json({ ok: false, error: "Error interno" });
+    }
+};
+exports.listTicketAgents = listTicketAgents;
 const diagnosticTicketsInbox = async (req, res) => {
     try {
         if (!(0, ticketAccess_1.isAdmin)(req.user)) {
@@ -112,10 +173,31 @@ const getTicketDetail = async (req, res) => {
         if (!detail) {
             return res.status(404).json({ ok: false, error: "Ticket no encontrado" });
         }
+        const auth = getAuthMeta(req);
+        (0, tickets_logger_1.logTicketInfo)({
+            action: "ticket_detail",
+            requestId: auth.requestId,
+            userId: auth.userId,
+            role: auth.role,
+            ticketId: id,
+            meta: {
+                threadMessages: detail.messages.length,
+                firstResponseStatus: detail.ticket.firstResponseStatus,
+                resolutionStatus: detail.ticket.resolutionStatus,
+            },
+        });
         return res.json({ ok: true, data: detail });
     }
     catch (err) {
-        console.error("getTicketDetail error:", err);
+        const auth = getAuthMeta(req);
+        (0, tickets_logger_1.logTicketError)({
+            action: "ticket_detail",
+            requestId: auth.requestId,
+            userId: auth.userId,
+            role: auth.role,
+            ticketId: Number(req.params.id),
+            error: err,
+        });
         return res.status(500).json({ ok: false, error: "Error interno" });
     }
 };
@@ -145,11 +227,18 @@ const replyTicketStub = async (req, res) => {
         if (!created) {
             return res.status(404).json({ ok: false, error: "Ticket no encontrado" });
         }
-        console.info("tickets_message_create", {
+        const auth = getAuthMeta(req);
+        (0, tickets_logger_1.logTicketInfo)({
+            action: "ticket_message_create",
+            requestId: auth.requestId,
+            userId: auth.userId,
+            role: auth.role,
             ticketId: id,
-            type: client_1.TicketMessageType.PUBLIC_REPLY,
-            toEmail: created.toEmail ?? null,
-            authorId: req.user?.id ?? null,
+            meta: {
+                type: client_1.TicketMessageType.PUBLIC_REPLY,
+                toEmail: created.toEmail ?? null,
+                bodyHtmlLength: bodyHtml.length,
+            },
         });
         return res.status(201).json({
             ok: true,
@@ -164,7 +253,15 @@ const replyTicketStub = async (req, res) => {
                 error: "Mensajeria no disponible. Ejecuta la migracion de TicketMessage.",
             });
         }
-        console.error("replyTicketStub error:", err);
+        const auth = getAuthMeta(req);
+        (0, tickets_logger_1.logTicketError)({
+            action: "ticket_message_create",
+            requestId: auth.requestId,
+            userId: auth.userId,
+            role: auth.role,
+            ticketId: Number(req.params.id),
+            error: err,
+        });
         return res.status(500).json({ ok: false, error: "Error interno" });
     }
 };
@@ -179,10 +276,27 @@ const listTicketMessages = async (req, res) => {
         if (!data) {
             return res.status(404).json({ ok: false, error: "Ticket no encontrado" });
         }
+        const auth = getAuthMeta(req);
+        (0, tickets_logger_1.logTicketInfo)({
+            action: "ticket_messages_list",
+            requestId: auth.requestId,
+            userId: auth.userId,
+            role: auth.role,
+            ticketId: id,
+            meta: { count: data.length },
+        });
         return res.json({ ok: true, data });
     }
     catch (err) {
-        console.error("listTicketMessages error:", err);
+        const auth = getAuthMeta(req);
+        (0, tickets_logger_1.logTicketError)({
+            action: "ticket_messages_list",
+            requestId: auth.requestId,
+            userId: auth.userId,
+            role: auth.role,
+            ticketId: Number(req.params.id),
+            error: err,
+        });
         return res.status(500).json({ ok: false, error: "Error interno" });
     }
 };
@@ -222,11 +336,20 @@ const createTicketMessage = async (req, res) => {
             return res.status(404).json({ ok: false, error: "Ticket no encontrado" });
         }
         const emailConfigured = Boolean(process.env.SMTP_HOST || process.env.SENDGRID_API_KEY);
-        console.info("tickets_message_create", {
+        const auth = getAuthMeta(req);
+        (0, tickets_logger_1.logTicketInfo)({
+            action: "ticket_message_create",
+            requestId: auth.requestId,
+            userId: auth.userId,
+            role: auth.role,
             ticketId: id,
-            type: resolvedType,
-            toEmail: created.toEmail ?? null,
-            authorId: req.user?.id ?? null,
+            meta: {
+                type: resolvedType,
+                toEmail: created.toEmail ?? null,
+                cc: created.cc ?? null,
+                bcc: created.bcc ?? null,
+                bodyHtmlLength: bodyHtml.trim().length,
+            },
         });
         return res.status(201).json({
             ok: true,
@@ -247,7 +370,15 @@ const createTicketMessage = async (req, res) => {
             err.message.toLowerCase().includes("mensaje vacio")) {
             return res.status(400).json({ ok: false, error: err.message });
         }
-        console.error("createTicketMessage error:", err);
+        const auth = getAuthMeta(req);
+        (0, tickets_logger_1.logTicketError)({
+            action: "ticket_message_create",
+            requestId: auth.requestId,
+            userId: auth.userId,
+            role: auth.role,
+            ticketId: Number(req.params.id),
+            error: err,
+        });
         return res.status(500).json({ ok: false, error: "Error interno" });
     }
 };
@@ -256,27 +387,65 @@ const updateTicket = async (req, res) => {
     try {
         const id = Number(req.params.id);
         if (Number.isNaN(id)) {
-            return res.status(400).json({ ok: false, error: "ID inválido" });
+            return res.status(400).json({ ok: false, error: "ID invalido" });
         }
         const { status, priority, estado, prioridad, categoria, trabajadorId } = req.body;
-        if (trabajadorId !== undefined && req.user?.role !== "ADMIN") {
-            return res.status(403).json({ ok: false, error: "Sin permisos" });
+        const changes = {};
+        const normalizedEstado = estado ?? status;
+        const normalizedPrioridad = prioridad ?? priority;
+        if (normalizedEstado !== undefined)
+            changes.estado = normalizedEstado;
+        if (normalizedPrioridad !== undefined)
+            changes.prioridad = normalizedPrioridad;
+        if (categoria !== undefined)
+            changes.categoria = categoria;
+        if (trabajadorId !== undefined)
+            changes.trabajadorId = trabajadorId;
+        const auth = getAuthMeta(req);
+        if (Object.keys(changes).length === 0) {
+            (0, tickets_logger_1.logTicketWarn)({
+                action: "ticket_update",
+                requestId: auth.requestId,
+                userId: auth.userId,
+                role: auth.role,
+                ticketId: id,
+                meta: { warning: "empty_changes" },
+            });
+            return res
+                .status(400)
+                .json({ ok: false, error: "No hay cambios para actualizar" });
         }
         const updated = await (0, tickets_service_1.updateTicketForUser)({
             id,
             user: req.user,
-            estado: estado ?? status,
-            prioridad: prioridad ?? priority,
+            estado: normalizedEstado,
+            prioridad: normalizedPrioridad,
             categoria,
             trabajadorId,
         });
         if (!updated) {
             return res.status(404).json({ ok: false, error: "Ticket no encontrado" });
         }
+        (0, tickets_logger_1.logTicketInfo)({
+            action: "ticket_update",
+            requestId: auth.requestId,
+            userId: auth.userId,
+            role: auth.role,
+            ticketId: id,
+            meta: { changes },
+        });
         return res.json({ ok: true, data: updated });
     }
     catch (err) {
-        console.error("updateTicket error:", err);
+        const auth = getAuthMeta(req);
+        (0, tickets_logger_1.logTicketError)({
+            action: "ticket_update",
+            requestId: auth.requestId,
+            userId: auth.userId,
+            role: auth.role,
+            ticketId: Number(req.params.id),
+            error: err,
+        });
         return res.status(500).json({ ok: false, error: "Error interno" });
     }
 };

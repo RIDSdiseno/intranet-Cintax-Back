@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.resolveTicketArea = resolveTicketArea;
 exports.getAreaChips = getAreaChips;
 exports.areaFromSlug = areaFromSlug;
+exports.areaToSlug = areaToSlug;
 const client_1 = require("@prisma/client");
 const AREA_UI_MAP = {
     CONTA: { area: client_1.Area.CONTA, slug: "contabilidad", name: "Contabilidad" },
@@ -20,6 +21,32 @@ const DEFAULT_KEYWORDS = {
     TRIBUTARIO: ["tributario", "impuestos", "marketing", "comercial"],
     ADMIN: [],
 };
+const CATEGORIA_MAP = [
+    {
+        area: client_1.Area.CONTA,
+        values: ["conta", "contabilidad", "contable", "administrativo"],
+    },
+    {
+        area: client_1.Area.RRHH,
+        values: ["rrhh", "recursos humanos", "recursos-humanos", "personas"],
+    },
+    {
+        area: client_1.Area.TRIBUTARIO,
+        values: [
+            "tributario",
+            "tributaria",
+            "comercial",
+            "marketing",
+            "comercial y marketing",
+            "comercial-y-marketing",
+            "ventas",
+        ],
+    },
+    {
+        area: client_1.Area.ADMIN,
+        values: ["admin", "administracion", "gerencia"],
+    },
+];
 function normalize(value) {
     return value.trim().toLowerCase();
 }
@@ -47,6 +74,20 @@ function resolveByEmail(destinations) {
         const area = EMAIL_MAP[normalize(email)];
         if (area && AREA_UI_MAP[area])
             return AREA_UI_MAP[area];
+    }
+    return null;
+}
+function resolveByCategoria(categoria) {
+    const normalized = normalize(String(categoria ?? ""));
+    if (!normalized)
+        return null;
+    const directEnum = normalized.toUpperCase();
+    if (AREA_UI_MAP[directEnum])
+        return AREA_UI_MAP[directEnum];
+    for (const entry of CATEGORIA_MAP) {
+        if (entry.values.some((value) => normalized === value)) {
+            return AREA_UI_MAP[entry.area];
+        }
     }
     return null;
 }
@@ -89,6 +130,9 @@ function resolveTicketArea(ticket) {
     if (areaInterna && AREA_UI_MAP[areaInterna]) {
         return AREA_UI_MAP[areaInterna];
     }
+    const byCategoria = resolveByCategoria(ticket.categoria ?? null);
+    if (byCategoria)
+        return byCategoria;
     const byEmail = resolveByEmail(getDestinationEmails(ticket));
     if (byEmail)
         return byEmail;
@@ -102,4 +146,9 @@ function getAreaChips() {
 }
 function areaFromSlug(slug) {
     return getAreaChips().find((area) => area.slug === slug) || null;
+}
+function areaToSlug(area) {
+    if (!area)
+        return null;
+    return AREA_UI_MAP[area]?.slug ?? null;
 }
