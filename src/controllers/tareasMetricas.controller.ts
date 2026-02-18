@@ -9,12 +9,21 @@ type AgregadoAgente = {
   nombre: string;
   email: string;
   areaInterna: string | null;
-  rol: string | null; // en tu modelo no existe, lo dejamos siempre en null por ahora
+  rol: string | null; // no existe en tu modelo actual
   pendientes: number;
   enProceso: number;
   vencidas: number;
   completadas: number;
   total: number;
+
+  // KPIs
+  porcentajeCompletadas: number;
+  porcentajeVencidas: number;
+  porcentajePendientes: number;
+  porcentajeEnProceso: number;
+  backlog: number; // pendientes + enProceso
+  indiceCumplimiento: number; // completadas + enProceso*0.5
+  indiceRiesgo: number; // vencidas*1.5 + pendientes
 };
 
 type PendEmpresa = {
@@ -28,6 +37,31 @@ type PendTarea = {
   cantidad: number;
 };
 
+// Helpers
+const round0 = (n: number) => Math.round(n);
+const pct = (num: number, den: number) => (den > 0 ? round0((num / den) * 100) : 0);
+
+const buildRangoFecha = (anio?: number, mes?: number) => {
+  if (!anio || !mes) return null;
+  const desde = new Date(anio, mes - 1, 1);
+  const hasta = new Date(anio, mes, 1);
+  return { gte: desde, lt: hasta };
+};
+
+const safeEstado = (estado: any): EstadoTarea | "OTRO" => {
+  if (estado === "PENDIENTE") return "PENDIENTE";
+  if (estado === "EN_PROCESO") return "EN_PROCESO";
+  if (estado === "VENCIDA") return "VENCIDA";
+  if (estado === "COMPLETADA") return "COMPLETADA";
+  return "OTRO";
+};
+
+const calcIndiceCumplimiento = (completadas: number, enProceso: number, total: number) =>
+  total > 0 ? round0(((completadas + enProceso * 0.5) / total) * 100) : 0;
+
+const calcIndiceRiesgo = (vencidas: number, pendientes: number, total: number) =>
+  total > 0 ? round0(((vencidas * 1.5 + pendientes) / total) * 100) : 0;
+
 // =========================================================
 // GET /tareas/supervision/metricas
 // ?areaInterna=CONTA&anio=2025&mes=12
@@ -38,20 +72,58 @@ export const getMetricasSupervision = async (req: Request, res: Response) => {
     const anio = req.query.anio ? Number(req.query.anio) : undefined;
     const mes = req.query.mes ? Number(req.query.mes) : undefined;
 
-    // Rango de fechas opcional (por mes)
-    let rangoFecha: { gte?: Date; lt?: Date } = {};
-    if (anio && mes) {
-      const desde = new Date(anio, mes - 1, 1);
-      const hasta = new Date(anio, mes, 1);
-      rangoFecha = { gte: desde, lt: hasta };
+    const rangoFecha = buildRangoFecha(anio, mes);
+
+    // 1) Cargamos trabajadores (si viene filtro de área, lo aplicamos aquí)
+    const whereTrabajador: any = {};
+    if (areaInterna !== "Todas") whereTrabajador.areaInterna = areaInterna;
+
+    const trabajadores = await prisma.trabajador.findMany({
+      where: whereTrabajador,
+      select: {
+        id_trabajador: true,
+        nombre: true,
+        email: true,
+        areaInterna: true,
+      },
+    });
+
+    if (!trabajadores.length) {
+      return res.json({
+        filtros: { areaInterna, anio: anio || null, mes: mes || null },
+        resumenGlobal: {
+          totalTareas: 0,
+          totalPendientes: 0,
+          totalEnProceso: 0,
+          totalVencidas: 0,
+          totalCompletadas: 0,
+          porcentajeCompletadas: 0,
+          porcentajePendientes: 0,
+          tasaVencidas: 0,
+          tasaEnProceso: 0,
+          backlogTotal: 0,
+          promedioTareasPorAgente: 0,
+          indiceCumplimiento: 0,
+          indiceRiesgo: 0,
+          saludOperativa: 0,
+        },
+        agentes: [],
+        rankingCumplimiento: [],
+        rankingRiesgo: [],
+        mejorCumplimiento: null,
+        masVencidas: null,
+      });
     }
 
-    const whereTareas: any = {};
-    if (rangoFecha.gte || rangoFecha.lt) {
-      whereTareas.fechaProgramada = rangoFecha;
-    }
+    const trabajadorIds = trabajadores.map((t) => t.id_trabajador);
+    const mapTrabajador = new Map(trabajadores.map((t) => [t.id_trabajador, t]));
 
-    // 1) Traemos todas las tareas que calzan con los filtros
+    // 2) Traemos tareas filtradas por trabajadores del área (si aplica) y por rango de fecha (si aplica)
+    const whereTareas: any = {
+      trabajadorId: { in: trabajadorIds },
+    };
+    if (rangoFecha) whereTareas.fechaProgramada = rangoFecha;
+
     const tareas = await prisma.tareaAsignada.findMany({
       where: whereTareas,
       select: {
@@ -72,11 +144,7 @@ export const getMetricasSupervision = async (req: Request, res: Response) => {
 
     if (!tareas.length) {
       return res.json({
-        filtros: {
-          areaInterna,
-          anio: anio || null,
-          mes: mes || null,
-        },
+        filtros: { areaInterna, anio: anio || null, mes: mes || null },
         resumenGlobal: {
           totalTareas: 0,
           totalPendientes: 0,
@@ -84,88 +152,43 @@ export const getMetricasSupervision = async (req: Request, res: Response) => {
           totalVencidas: 0,
           totalCompletadas: 0,
           porcentajeCompletadas: 0,
-          promedioTareasPorAgente: 0,
+          porcentajePendientes: 0,
           tasaVencidas: 0,
           tasaEnProceso: 0,
+          backlogTotal: 0,
+          promedioTareasPorAgente: 0,
+          indiceCumplimiento: 0,
+          indiceRiesgo: 0,
+          saludOperativa: 0,
         },
         agentes: [],
+        rankingCumplimiento: [],
+        rankingRiesgo: [],
         mejorCumplimiento: null,
         masVencidas: null,
       });
     }
 
-    // 2) Sacamos todos los IDs de trabajadores involucrados
-    const trabajadorIds = Array.from(
-      new Set(
-        tareas
-          .map((t) => t.trabajadorId)
-          .filter((id): id is number => id !== null && id !== undefined)
-      )
-    );
+    // 3) Agregamos por agente
+    const mapAgentes = new Map<number, Omit<AgregadoAgente, "porcentajeCompletadas" | "porcentajeVencidas" | "porcentajePendientes" | "porcentajeEnProceso" | "backlog" | "indiceCumplimiento" | "indiceRiesgo">>();
 
-    // 3) Cargamos los trabajadores desde la tabla Trabajador
-    const whereTrabajador: any = {
-      id_trabajador: { in: trabajadorIds },
-    };
-    if (areaInterna !== "Todas") {
-      whereTrabajador.areaInterna = areaInterna;
-    }
-
-    const trabajadores = await prisma.trabajador.findMany({
-      where: whereTrabajador,
-      select: {
-        id_trabajador: true,
-        nombre: true,
-        email: true,
-        areaInterna: true,
-        // rol no existe en el modelo actual
-      },
-    });
-
-    if (!trabajadores.length) {
-      return res.json({
-        filtros: {
-          areaInterna,
-          anio: anio || null,
-          mes: mes || null,
-        },
-        resumenGlobal: {
-          totalTareas: 0,
-          totalPendientes: 0,
-          totalEnProceso: 0,
-          totalVencidas: 0,
-          totalCompletadas: 0,
-          porcentajeCompletadas: 0,
-          promedioTareasPorAgente: 0,
-          tasaVencidas: 0,
-          tasaEnProceso: 0,
-        },
-        agentes: [],
-        mejorCumplimiento: null,
-        masVencidas: null,
-      });
-    }
-
-    // Index de trabajador para lookup rápido
-    const mapTrabajador = new Map(
-      trabajadores.map((t) => [t.id_trabajador, t])
-    );
-
-    const mapAgentes = new Map<number, AgregadoAgente>();
+    // Para evitar que "OTRO" distorsione porcentajes sin contarlo, lo contaremos como "otros"
+    let totalOtros = 0;
 
     for (const t of tareas) {
-      if (!t.trabajadorId) continue;
-      const datosTrabajador = mapTrabajador.get(t.trabajadorId);
-      if (!datosTrabajador) continue; // puede que el filtro de área lo haya excluido
+      const trabajadorId = t.trabajadorId;
+      if (!trabajadorId) continue;
 
-      const key = t.trabajadorId;
-      if (!mapAgentes.has(key)) {
-        mapAgentes.set(key, {
-          trabajadorId: t.trabajadorId,
+      const datosTrabajador = mapTrabajador.get(trabajadorId);
+      if (!datosTrabajador) continue;
+
+      if (!mapAgentes.has(trabajadorId)) {
+        mapAgentes.set(trabajadorId, {
+          trabajadorId,
           nombre: datosTrabajador.nombre,
           email: datosTrabajador.email,
           areaInterna: datosTrabajador.areaInterna,
-          rol: null, // no existe en la BDD
+          rol: null,
           pendientes: 0,
           enProceso: 0,
           vencidas: 0,
@@ -174,25 +197,22 @@ export const getMetricasSupervision = async (req: Request, res: Response) => {
         });
       }
 
-      const agg = mapAgentes.get(key)!;
-      const estado = t.estado as EstadoTarea;
+      const agg = mapAgentes.get(trabajadorId)!;
+      const estado = safeEstado(t.estado);
 
       if (estado === "PENDIENTE") agg.pendientes++;
       else if (estado === "EN_PROCESO") agg.enProceso++;
       else if (estado === "VENCIDA") agg.vencidas++;
       else if (estado === "COMPLETADA") agg.completadas++;
+      else totalOtros++;
 
       agg.total++;
     }
 
-    const agentes = Array.from(mapAgentes.values());
-    if (!agentes.length) {
+    const agentesBase = Array.from(mapAgentes.values());
+    if (!agentesBase.length) {
       return res.json({
-        filtros: {
-          areaInterna,
-          anio: anio || null,
-          mes: mes || null,
-        },
+        filtros: { areaInterna, anio: anio || null, mes: mes || null },
         resumenGlobal: {
           totalTareas: 0,
           totalPendientes: 0,
@@ -200,11 +220,18 @@ export const getMetricasSupervision = async (req: Request, res: Response) => {
           totalVencidas: 0,
           totalCompletadas: 0,
           porcentajeCompletadas: 0,
-          promedioTareasPorAgente: 0,
+          porcentajePendientes: 0,
           tasaVencidas: 0,
           tasaEnProceso: 0,
+          backlogTotal: 0,
+          promedioTareasPorAgente: 0,
+          indiceCumplimiento: 0,
+          indiceRiesgo: 0,
+          saludOperativa: 0,
         },
         agentes: [],
+        rankingCumplimiento: [],
+        rankingRiesgo: [],
         mejorCumplimiento: null,
         masVencidas: null,
       });
@@ -213,69 +240,76 @@ export const getMetricasSupervision = async (req: Request, res: Response) => {
     // =======================
     // RESUMEN GLOBAL
     // =======================
-    const totalTareas = agentes.reduce((acc, a) => acc + a.total, 0);
-    const totalPendientes = agentes.reduce((acc, a) => acc + a.pendientes, 0);
-    const totalEnProceso = agentes.reduce((acc, a) => acc + a.enProceso, 0);
-    const totalVencidas = agentes.reduce((acc, a) => acc + a.vencidas, 0);
-    const totalCompletadas = agentes.reduce(
-      (acc, a) => acc + a.completadas,
-      0
-    );
+    const totalTareas = agentesBase.reduce((acc, a) => acc + a.total, 0);
+    const totalPendientes = agentesBase.reduce((acc, a) => acc + a.pendientes, 0);
+    const totalEnProceso = agentesBase.reduce((acc, a) => acc + a.enProceso, 0);
+    const totalVencidas = agentesBase.reduce((acc, a) => acc + a.vencidas, 0);
+    const totalCompletadas = agentesBase.reduce((acc, a) => acc + a.completadas, 0);
+
+    const porcentajeCompletadas = pct(totalCompletadas, totalTareas);
+    const porcentajePendientes = pct(totalPendientes, totalTareas);
+    const tasaVencidas = pct(totalVencidas, totalTareas);
+    const tasaEnProceso = pct(totalEnProceso, totalTareas);
+
+    const backlogTotal = totalPendientes + totalEnProceso;
 
     const promedioTareasPorAgente =
-      totalTareas > 0 && agentes.length > 0
-        ? Math.round((totalTareas / agentes.length) * 10) / 10
+      totalTareas > 0 && agentesBase.length > 0
+        ? Math.round((totalTareas / agentesBase.length) * 10) / 10
         : 0;
 
-    const porcentajeCompletadas =
-      totalTareas > 0
-        ? Math.round((totalCompletadas / totalTareas) * 100)
-        : 0;
-    const tasaVencidas =
-      totalTareas > 0 ? Math.round((totalVencidas / totalTareas) * 100) : 0;
-    const tasaEnProceso =
-      totalTareas > 0 ? Math.round((totalEnProceso / totalTareas) * 100) : 0;
+    const indiceCumplimiento = calcIndiceCumplimiento(totalCompletadas, totalEnProceso, totalTareas);
+    const indiceRiesgo = calcIndiceRiesgo(totalVencidas, totalPendientes, totalTareas);
+
+    // Salud operativa: completadas - vencidas ponderadas (0..100 aprox, puede ser negativo; lo acotamos)
+    const saludOperativaRaw = porcentajeCompletadas - tasaVencidas * 1.2;
+    const saludOperativa = Math.max(-100, Math.min(100, Math.round(saludOperativaRaw)));
 
     // =======================
     // KPIs POR AGENTE
     // =======================
-    const agentesConKpi = agentes.map((a) => {
+    const agentes: AgregadoAgente[] = agentesBase.map((a) => {
       const total = a.total;
-      const porcentajeCompletadasAgente =
-        total > 0 ? Math.round((a.completadas / total) * 100) : 0;
-      const porcentajeVencidasAgente =
-        total > 0 ? Math.round((a.vencidas / total) * 100) : 0;
-      const porcentajePendientesAgente =
-        total > 0 ? Math.round((a.pendientes / total) * 100) : 0;
+      const porcentajeCompletadasAgente = pct(a.completadas, total);
+      const porcentajeVencidasAgente = pct(a.vencidas, total);
+      const porcentajePendientesAgente = pct(a.pendientes, total);
+      const porcentajeEnProcesoAgente = pct(a.enProceso, total);
+      const backlog = a.pendientes + a.enProceso;
+
+      const indiceCumplimientoAgente = calcIndiceCumplimiento(a.completadas, a.enProceso, total);
+      const indiceRiesgoAgente = calcIndiceRiesgo(a.vencidas, a.pendientes, total);
 
       return {
         ...a,
         porcentajeCompletadas: porcentajeCompletadasAgente,
         porcentajeVencidas: porcentajeVencidasAgente,
         porcentajePendientes: porcentajePendientesAgente,
+        porcentajeEnProceso: porcentajeEnProcesoAgente,
+        backlog,
+        indiceCumplimiento: indiceCumplimientoAgente,
+        indiceRiesgo: indiceRiesgoAgente,
       };
     });
 
-    const mejorCumplimiento =
-      agentesConKpi.length > 0
-        ? [...agentesConKpi].sort(
-            (a, b) => b.porcentajeCompletadas - a.porcentajeCompletadas
-          )[0]
-        : null;
+    // Rankings
+    const rankingCumplimiento = [...agentes]
+      .sort((a, b) => b.indiceCumplimiento - a.indiceCumplimiento)
+      .slice(0, 3);
 
-    const masVencidas =
-      agentesConKpi.length > 0
-        ? [...agentesConKpi].sort(
-            (a, b) => b.porcentajeVencidas - a.porcentajeVencidas
-          )[0]
-        : null;
+    const rankingRiesgo = [...agentes]
+      .sort((a, b) => b.indiceRiesgo - a.indiceRiesgo)
+      .slice(0, 3);
+
+    const mejorCumplimiento = agentes.length
+      ? [...agentes].sort((a, b) => b.porcentajeCompletadas - a.porcentajeCompletadas)[0]
+      : null;
+
+    const masVencidas = agentes.length
+      ? [...agentes].sort((a, b) => b.porcentajeVencidas - a.porcentajeVencidas)[0]
+      : null;
 
     return res.json({
-      filtros: {
-        areaInterna,
-        anio: anio || null,
-        mes: mes || null,
-      },
+      filtros: { areaInterna, anio: anio || null, mes: mes || null },
       resumenGlobal: {
         totalTareas,
         totalPendientes,
@@ -283,19 +317,25 @@ export const getMetricasSupervision = async (req: Request, res: Response) => {
         totalVencidas,
         totalCompletadas,
         porcentajeCompletadas,
-        promedioTareasPorAgente,
+        porcentajePendientes,
         tasaVencidas,
         tasaEnProceso,
+        backlogTotal,
+        promedioTareasPorAgente,
+        indiceCumplimiento,
+        indiceRiesgo,
+        saludOperativa,
+        totalOtros,
       },
-      agentes: agentesConKpi,
+      agentes,
+      rankingCumplimiento,
+      rankingRiesgo,
       mejorCumplimiento,
       masVencidas,
     });
   } catch (error) {
     console.error("[Back] Error en getMetricasSupervision", error);
-    return res
-      .status(500)
-      .json({ message: "Error interno cargando métricas de supervisión" });
+    return res.status(500).json({ message: "Error interno cargando métricas de supervisión" });
   }
 };
 
@@ -311,72 +351,77 @@ export const getMetricasAgente = async (req: Request, res: Response) => {
 
     const anio = req.query.anio ? Number(req.query.anio) : undefined;
     const mes = req.query.mes ? Number(req.query.mes) : undefined;
-
-    let rangoFecha: { gte?: Date; lt?: Date } = {};
-    if (anio && mes) {
-      const desde = new Date(anio, mes - 1, 1);
-      const hasta = new Date(anio, mes, 1);
-      rangoFecha = { gte: desde, lt: hasta };
-    }
+    const rangoFecha = buildRangoFecha(anio, mes);
 
     const where: any = { trabajadorId };
+    if (rangoFecha) where.fechaProgramada = rangoFecha;
 
-    if (rangoFecha.gte || rangoFecha.lt) {
-      where.fechaProgramada = rangoFecha;
-    }
-
-    const tareas = await prisma.tareaAsignada.findMany({
-      where,
-      select: {
-        id_tarea_asignada: true,
-        estado: true,
-        rutCliente: true,
-        fechaProgramada: true,
-        tareaPlantilla: {
-          select: {
-            id_tarea_plantilla: true,
-            nombre: true,
-            area: true,
+    const [tareas, trabajador] = await Promise.all([
+      prisma.tareaAsignada.findMany({
+        where,
+        select: {
+          id_tarea_asignada: true,
+          estado: true,
+          rutCliente: true,
+          fechaProgramada: true,
+          tareaPlantilla: {
+            select: {
+              id_tarea_plantilla: true,
+              nombre: true,
+              area: true,
+            },
           },
         },
-      },
-    });
+      }),
+      prisma.trabajador.findUnique({
+        where: { id_trabajador: trabajadorId },
+        select: {
+          id_trabajador: true,
+          nombre: true,
+          email: true,
+          areaInterna: true,
+        },
+      }),
+    ]);
 
-    // Buscar info del trabajador
-    const trabajador = await prisma.trabajador.findUnique({
-      where: { id_trabajador: trabajadorId },
-      select: {
-        id_trabajador: true,
-        nombre: true,
-        email: true,
-        areaInterna: true,
-        // rol no existe
-      },
-    });
-
-    if (!tareas.length || !trabajador) {
+    if (!trabajador) {
       return res.json({
         trabajadorId,
-        filtros: {
-          anio: anio || null,
-          mes: mes || null,
+        filtros: { anio: anio || null, mes: mes || null },
+        resumenAgente: null,
+        kpis: null,
+        pendientesPorEmpresa: [],
+        pendientesPorTarea: [],
+        completadasPorEmpresa: [],
+      });
+    }
+
+    if (!tareas.length) {
+      return res.json({
+        trabajadorId,
+        filtros: { anio: anio || null, mes: mes || null },
+        resumenAgente: {
+          trabajadorId,
+          nombre: trabajador.nombre,
+          email: trabajador.email,
+          areaInterna: trabajador.areaInterna,
+          rol: null,
+          pendientes: 0,
+          enProceso: 0,
+          vencidas: 0,
+          completadas: 0,
+          total: 0,
+          porcentajeCompletadas: 0,
+          porcentajeVencidas: 0,
         },
-        resumenAgente: trabajador
-          ? {
-              trabajadorId,
-              nombre: trabajador.nombre,
-              email: trabajador.email,
-              areaInterna: trabajador.areaInterna,
-              rol: null,
-              pendientes: 0,
-              enProceso: 0,
-              vencidas: 0,
-              completadas: 0,
-              total: 0,
-              porcentajeCompletadas: 0,
-              porcentajeVencidas: 0,
-            }
-          : null,
+        kpis: {
+          backlog: 0,
+          indiceCumplimiento: 0,
+          indiceRiesgo: 0,
+          porcentajePendientes: 0,
+          porcentajeEnProceso: 0,
+          saturacion: 0,
+        },
         pendientesPorEmpresa: [],
         pendientesPorTarea: [],
         completadasPorEmpresa: [],
@@ -387,73 +432,70 @@ export const getMetricasAgente = async (req: Request, res: Response) => {
     let enProceso = 0;
     let vencidas = 0;
     let completadas = 0;
+    let otros = 0;
 
     const mapEmpresaPend = new Map<string, PendEmpresa>();
     const mapEmpresaComp = new Map<string, PendEmpresa>();
-    const mapTarea = new Map<string, PendTarea>();
+    const mapTareaPend = new Map<string, PendTarea>();
 
     for (const t of tareas) {
-      const estado = t.estado as EstadoTarea;
+      const estado = safeEstado(t.estado);
+
       if (estado === "PENDIENTE") pendientes++;
       else if (estado === "EN_PROCESO") enProceso++;
       else if (estado === "VENCIDA") vencidas++;
       else if (estado === "COMPLETADA") completadas++;
+      else otros++;
 
       const rut = t.rutCliente || "SIN_RUT";
-      const empresa =
-        t.tareaPlantilla?.area ||
-        t.rutCliente ||
-        "Sin cliente asignado";
+
+      // OJO: acá NO tienes nombre real de empresa, solo rut o área de la plantilla.
+      // Dejamos "empresa" como:
+      // - si existe rut, mostramos rut
+      // - si no, "Sin cliente"
+      const empresa = t.rutCliente || "Sin cliente asignado";
 
       // ====== PENDIENTES / VENCIDAS por empresa ======
       if (estado === "PENDIENTE" || estado === "VENCIDA") {
-        const kEmpresa = rut;
-        const e = mapEmpresaPend.get(kEmpresa);
-        if (e) {
-          e.cantidad += 1;
-        } else {
-          mapEmpresaPend.set(kEmpresa, {
+        const e = mapEmpresaPend.get(rut);
+        if (e) e.cantidad += 1;
+        else
+          mapEmpresaPend.set(rut, {
             rutCliente: t.rutCliente || null,
             empresa,
             cantidad: 1,
           });
-        }
 
-        const nombreTarea =
-          t.tareaPlantilla?.nombre || "Tarea sin nombre definido";
-        const kTarea = nombreTarea;
-        const te = mapTarea.get(kTarea);
-        if (te) {
-          te.cantidad += 1;
-        } else {
-          mapTarea.set(kTarea, {
-            nombreTarea,
-            cantidad: 1,
-          });
-        }
+        const nombreTarea = t.tareaPlantilla?.nombre || "Tarea sin nombre definido";
+        const te = mapTareaPend.get(nombreTarea);
+        if (te) te.cantidad += 1;
+        else mapTareaPend.set(nombreTarea, { nombreTarea, cantidad: 1 });
       }
 
       // ====== COMPLETADAS por empresa ======
       if (estado === "COMPLETADA") {
-        const kEmpresa = rut;
-        const c = mapEmpresaComp.get(kEmpresa);
-        if (c) {
-          c.cantidad += 1;
-        } else {
-          mapEmpresaComp.set(kEmpresa, {
+        const c = mapEmpresaComp.get(rut);
+        if (c) c.cantidad += 1;
+        else
+          mapEmpresaComp.set(rut, {
             rutCliente: t.rutCliente || null,
             empresa,
             cantidad: 1,
           });
-        }
       }
     }
 
-    const total = pendientes + enProceso + vencidas + completadas;
-    const porcentajeCompletadas =
-      total > 0 ? Math.round((completadas / total) * 100) : 0;
-    const porcentajeVencidas =
-      total > 0 ? Math.round((vencidas / total) * 100) : 0;
+    const total = pendientes + enProceso + vencidas + completadas + otros;
+
+    const porcentajeCompletadas = pct(completadas, total);
+    const porcentajeVencidas = pct(vencidas, total);
+    const porcentajePendientes = pct(pendientes, total);
+    const porcentajeEnProceso = pct(enProceso, total);
+
+    const backlog = pendientes + enProceso;
+    const indiceCumplimiento = calcIndiceCumplimiento(completadas, enProceso, total);
+    const indiceRiesgo = calcIndiceRiesgo(vencidas, pendientes, total);
+    const saturacion = pct(backlog, total);
 
     const resumenAgente = {
       trabajadorId,
@@ -468,35 +510,36 @@ export const getMetricasAgente = async (req: Request, res: Response) => {
       total,
       porcentajeCompletadas,
       porcentajeVencidas,
+      otros,
     };
 
-    const pendientesPorEmpresa = Array.from(mapEmpresaPend.values()).sort(
-      (a, b) => b.cantidad - a.cantidad
-    );
+    const pendientesPorEmpresa = Array.from(mapEmpresaPend.values()).sort((a, b) => b.cantidad - a.cantidad);
+    const pendientesPorTarea = Array.from(mapTareaPend.values()).sort((a, b) => b.cantidad - a.cantidad);
+    const completadasPorEmpresa = Array.from(mapEmpresaComp.values()).sort((a, b) => b.cantidad - a.cantidad);
 
-    const pendientesPorTarea = Array.from(mapTarea.values()).sort(
-      (a, b) => b.cantidad - a.cantidad
-    );
-
-    const completadasPorEmpresa = Array.from(mapEmpresaComp.values()).sort(
-      (a, b) => b.cantidad - a.cantidad
-    );
+    const clienteConMasCarga = pendientesPorEmpresa[0] || null;
+    const tareaMasPendiente = pendientesPorTarea[0] || null;
 
     return res.json({
       trabajadorId,
-      filtros: {
-        anio: anio || null,
-        mes: mes || null,
-      },
+      filtros: { anio: anio || null, mes: mes || null },
       resumenAgente,
+      kpis: {
+        backlog,
+        indiceCumplimiento,
+        indiceRiesgo,
+        porcentajePendientes,
+        porcentajeEnProceso,
+        saturacion,
+        clienteConMasCarga,
+        tareaMasPendiente,
+      },
       pendientesPorEmpresa,
       pendientesPorTarea,
       completadasPorEmpresa,
     });
   } catch (error) {
     console.error("[Back] Error en getMetricasAgente", error);
-    return res.status(500).json({
-      message: "Error interno cargando métricas del agente",
-    });
+    return res.status(500).json({ message: "Error interno cargando métricas del agente" });
   }
 };
