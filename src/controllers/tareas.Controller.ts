@@ -743,14 +743,30 @@ export const upsertClienteTareaExclusion = async (req: Request, res: Response) =
     const tareaPlantillaId = Number(body.tareaPlantillaId);
 
     if (!rutCliente) return res.status(400).json({ error: "rutCliente es requerido" });
-    if (!Number.isFinite(tareaPlantillaId))
+    if (!Number.isFinite(tareaPlantillaId)) {
       return res.status(400).json({ error: "tareaPlantillaId inválido" });
+    }
 
-    if (typeof body.activa !== "boolean")
+    if (typeof body.activa !== "boolean") {
       return res.status(400).json({ error: "activa debe ser boolean (true/false)" });
+    }
 
-    // valida que el cliente exista
-    const cliente = await prisma.cliente.findUnique({
+    const motivoLimpio = typeof body.motivo === "string" ? body.motivo.trim() : body.motivo ?? null;
+
+    let desdeFecha: Date | null = null;
+
+    if (body.desdeFecha) {
+      const parsed = new Date(body.desdeFecha);
+
+      if (Number.isNaN(parsed.getTime())) {
+        return res.status(400).json({ error: "desdeFecha inválido (debe ser ISO)" });
+      }
+
+      desdeFecha = parsed;
+    }
+
+    // ✅ valida que el cliente exista (rut NO es unique en tu schema actual)
+    const cliente = await prisma.cliente.findFirst({
       where: { rut: rutCliente },
       select: { rut: true },
     });
@@ -763,7 +779,7 @@ export const upsertClienteTareaExclusion = async (req: Request, res: Response) =
     });
     if (!plantilla) return res.status(404).json({ error: "Plantilla no encontrada" });
 
-    const desdeFecha = body.desdeFecha ? new Date(body.desdeFecha) : null;
+    const now = new Date();
 
     const record = await prisma.clienteTareaExclusion.upsert({
       where: {
@@ -776,13 +792,17 @@ export const upsertClienteTareaExclusion = async (req: Request, res: Response) =
         rutCliente,
         tareaPlantillaId,
         activa: body.activa, // true=NO aplica, false=APLICA
-        motivo: body.motivo ?? null,
+        motivo: motivoLimpio,
         desdeFecha,
+        // ✅ Prisma te lo exige como required
+        updatedAt: now,
       },
       update: {
         activa: body.activa,
-        motivo: body.motivo ?? null,
+        motivo: motivoLimpio,
         desdeFecha,
+        // ✅ mantener updatedAt consistente
+        updatedAt: now,
       },
       select: {
         id: true,
@@ -820,7 +840,7 @@ export const upsertClienteTareaExclusion = async (req: Request, res: Response) =
           tareaPlantillaId,
           estado: "NO_APLICA",
         },
-        data: { estado: "PENDIENTE" }, // cambia a "NO_REALIZADA" si ese es tu estado inicial real
+        data: { estado: "PENDIENTE" }, // ajusta si tu estado inicial real es otro
       });
     }
 
@@ -830,6 +850,7 @@ export const upsertClienteTareaExclusion = async (req: Request, res: Response) =
     return res.status(500).json({ error: "Error interno guardando exclusión" });
   }
 };
+
 
 
 

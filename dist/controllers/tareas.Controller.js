@@ -1,7 +1,7 @@
 "use strict";
 // src/controllers/tareas.controller.ts
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getTareasAsignadasPorClienteYTrabajador = exports.eliminarPlantillaConTareas = exports.upsertClienteTareaExclusion = exports.listPlantillasConAplicaPorCliente = exports.subirArchivo = exports.ensureDriveFolder = exports.getResumenSupervision = exports.actualizarEstado = exports.crearTareasDesdePlantilla = exports.getTareasPorPlantilla = exports.crearPlantilla = exports.getPlantillas = exports.getTareasPorRut = exports.getMisRuts = void 0;
+exports.getTareasPorRuts = exports.getTareasAsignadasPorClienteYTrabajador = exports.eliminarPlantillaConTareas = exports.upsertClienteTareaExclusion = exports.listPlantillasConAplicaPorCliente = exports.subirArchivo = exports.ensureDriveFolder = exports.getResumenSupervision = exports.actualizarEstado = exports.crearTareasDesdePlantilla = exports.getTareasPorPlantilla = exports.crearPlantilla = exports.getPlantillas = exports.getTareasPorRut = exports.getMisRuts = void 0;
 const prisma_1 = require("../lib/prisma");
 const driveContaTasks_1 = require("../services/driveContaTasks");
 const client_1 = require("@prisma/client");
@@ -158,39 +158,78 @@ const crearPlantilla = async (req, res) => {
     try {
         if (!req.user?.id)
             return res.status(401).json({ message: "No autorizado" });
-        const { area, nombre, detalle, frecuencia, presentacion, frecuenciaTexto, plazoMaximoTexto, diaMesVencimiento, diaSemanaVencimiento, responsableDefaultId, codigoDocumento, requiereDrive, activo, } = req.body;
-        if (!area)
-            return res.status(400).json({ message: "area es obligatoria" });
-        if (!nombre?.trim())
+        const b = req.body ?? {};
+        const area = String(b.area ?? "").trim();
+        const nombre = String(b.nombre ?? "").trim();
+        const detalle = String(b.detalle ?? "").trim();
+        const frecuencia = String(b.frecuencia ?? "").trim(); // "MENSUAL" | "SEMANAL" | "UNICA"
+        const presentacion = String(b.presentacion ?? "").trim(); // "CLIENTE" | "INTERNO"
+        const frecuenciaTexto = b.frecuenciaTexto != null ? String(b.frecuenciaTexto) : null;
+        const plazoMaximoTexto = b.plazoMaximoTexto != null ? String(b.plazoMaximoTexto) : null;
+        const diaMesVencimiento = b.diaMesVencimiento === "" || b.diaMesVencimiento == null
+            ? null
+            : Number(b.diaMesVencimiento);
+        const diaSemanaVencimiento = b.diaSemanaVencimiento === "" || b.diaSemanaVencimiento == null
+            ? null
+            : Number(b.diaSemanaVencimiento);
+        const responsableDefaultId = b.responsableDefaultId === "" || b.responsableDefaultId == null
+            ? null
+            : Number(b.responsableDefaultId);
+        const codigoDocumento = b.codigoDocumento != null && String(b.codigoDocumento).trim() !== ""
+            ? String(b.codigoDocumento).trim()
+            : null;
+        const requiereDrive = typeof b.requiereDrive === "boolean"
+            ? b.requiereDrive
+            : b.requiereDrive == null
+                ? true
+                : String(b.requiereDrive).toLowerCase() === "true";
+        const activo = typeof b.activo === "boolean"
+            ? b.activo
+            : b.activo == null
+                ? true
+                : String(b.activo).toLowerCase() === "true";
+        // ---- Validaciones duras de enum (evita 500 por Prisma) ----
+        const areasValidas = new Set(["CONTA", "RRHH", "FINANZAS", "LOGISTICA"]); // ajusta a TU enum real
+        const frecuenciasValidas = new Set(["MENSUAL", "SEMANAL", "UNICA"]);
+        const presentacionesValidas = new Set(["CLIENTE", "INTERNO"]);
+        if (!areasValidas.has(area))
+            return res.status(400).json({ message: "area inválida" });
+        if (!nombre)
             return res.status(400).json({ message: "nombre es obligatorio" });
-        if (!detalle?.trim())
+        if (!detalle)
             return res.status(400).json({ message: "detalle es obligatorio" });
-        if (!frecuencia)
-            return res.status(400).json({ message: "frecuencia es obligatoria" });
-        if (!presentacion)
-            return res.status(400).json({ message: "presentacion es obligatoria" });
-        // Validaciones extra simples por vencimiento
-        if (frecuencia === "MENSUAL" && (diaMesVencimiento == null || diaMesVencimiento < 1 || diaMesVencimiento > 31)) {
-            return res.status(400).json({ message: "diaMesVencimiento requerido (1-31) cuando frecuencia es MENSUAL" });
+        if (!frecuenciasValidas.has(frecuencia))
+            return res.status(400).json({ message: "frecuencia inválida" });
+        if (!presentacionesValidas.has(presentacion))
+            return res.status(400).json({ message: "presentacion inválida" });
+        if (frecuencia === "MENSUAL") {
+            if (!Number.isFinite(diaMesVencimiento) || diaMesVencimiento < 1 || diaMesVencimiento > 31) {
+                return res.status(400).json({ message: "diaMesVencimiento requerido (1-31) cuando frecuencia es MENSUAL" });
+            }
         }
-        if (frecuencia === "SEMANAL" && (diaSemanaVencimiento == null || diaSemanaVencimiento < 1 || diaSemanaVencimiento > 7)) {
-            return res.status(400).json({ message: "diaSemanaVencimiento requerido (1-7) cuando frecuencia es SEMANAL" });
+        if (frecuencia === "SEMANAL") {
+            if (!Number.isFinite(diaSemanaVencimiento) || diaSemanaVencimiento < 1 || diaSemanaVencimiento > 7) {
+                return res.status(400).json({ message: "diaSemanaVencimiento requerido (1-7) cuando frecuencia es SEMANAL" });
+            }
+        }
+        if (responsableDefaultId != null && !Number.isFinite(responsableDefaultId)) {
+            return res.status(400).json({ message: "responsableDefaultId inválido" });
         }
         const nueva = await prisma_1.prisma.tareaPlantilla.create({
             data: {
-                area,
-                nombre: nombre.trim(),
-                detalle: detalle.trim(),
-                frecuencia,
-                presentacion,
-                frecuenciaTexto: frecuenciaTexto ?? null,
-                plazoMaximoTexto: plazoMaximoTexto ?? null,
-                diaMesVencimiento: diaMesVencimiento ?? null,
-                diaSemanaVencimiento: diaSemanaVencimiento ?? null,
-                responsableDefaultId: responsableDefaultId ?? null,
-                codigoDocumento: codigoDocumento ?? null,
-                requiereDrive: requiereDrive ?? true,
-                activo: activo ?? true,
+                area: area,
+                nombre,
+                detalle,
+                frecuencia: frecuencia,
+                presentacion: presentacion,
+                frecuenciaTexto,
+                plazoMaximoTexto,
+                diaMesVencimiento,
+                diaSemanaVencimiento,
+                responsableDefaultId,
+                codigoDocumento,
+                requiereDrive,
+                activo,
             },
         });
         return res.status(201).json(nueva);
@@ -598,12 +637,23 @@ const upsertClienteTareaExclusion = async (req, res) => {
         const tareaPlantillaId = Number(body.tareaPlantillaId);
         if (!rutCliente)
             return res.status(400).json({ error: "rutCliente es requerido" });
-        if (!Number.isFinite(tareaPlantillaId))
+        if (!Number.isFinite(tareaPlantillaId)) {
             return res.status(400).json({ error: "tareaPlantillaId inválido" });
-        if (typeof body.activa !== "boolean")
+        }
+        if (typeof body.activa !== "boolean") {
             return res.status(400).json({ error: "activa debe ser boolean (true/false)" });
-        // valida que el cliente exista
-        const cliente = await prisma_1.prisma.cliente.findUnique({
+        }
+        const motivoLimpio = typeof body.motivo === "string" ? body.motivo.trim() : body.motivo ?? null;
+        let desdeFecha = null;
+        if (body.desdeFecha) {
+            const parsed = new Date(body.desdeFecha);
+            if (Number.isNaN(parsed.getTime())) {
+                return res.status(400).json({ error: "desdeFecha inválido (debe ser ISO)" });
+            }
+            desdeFecha = parsed;
+        }
+        // ✅ valida que el cliente exista (rut NO es unique en tu schema actual)
+        const cliente = await prisma_1.prisma.cliente.findFirst({
             where: { rut: rutCliente },
             select: { rut: true },
         });
@@ -616,7 +666,7 @@ const upsertClienteTareaExclusion = async (req, res) => {
         });
         if (!plantilla)
             return res.status(404).json({ error: "Plantilla no encontrada" });
-        const desdeFecha = body.desdeFecha ? new Date(body.desdeFecha) : null;
+        const now = new Date();
         const record = await prisma_1.prisma.clienteTareaExclusion.upsert({
             where: {
                 rutCliente_tareaPlantillaId: {
@@ -628,13 +678,17 @@ const upsertClienteTareaExclusion = async (req, res) => {
                 rutCliente,
                 tareaPlantillaId,
                 activa: body.activa, // true=NO aplica, false=APLICA
-                motivo: body.motivo ?? null,
+                motivo: motivoLimpio,
                 desdeFecha,
+                // ✅ Prisma te lo exige como required
+                updatedAt: now,
             },
             update: {
                 activa: body.activa,
-                motivo: body.motivo ?? null,
+                motivo: motivoLimpio,
                 desdeFecha,
+                // ✅ mantener updatedAt consistente
+                updatedAt: now,
             },
             select: {
                 id: true,
@@ -670,7 +724,7 @@ const upsertClienteTareaExclusion = async (req, res) => {
                     tareaPlantillaId,
                     estado: "NO_APLICA",
                 },
-                data: { estado: "PENDIENTE" }, // cambia a "NO_REALIZADA" si ese es tu estado inicial real
+                data: { estado: "PENDIENTE" }, // ajusta si tu estado inicial real es otro
             });
         }
         return res.json(record);
@@ -805,3 +859,65 @@ const getTareasAsignadasPorClienteYTrabajador = async (req, res) => {
     }
 };
 exports.getTareasAsignadasPorClienteYTrabajador = getTareasAsignadasPorClienteYTrabajador;
+// ---------------------------------------------------------------------------
+// 2.B) Obtener tareas por MUCHOS RUTs (BULK)
+//    POST /tareas/por-ruts
+//    body: { trabajadorId?, ruts: string[], anio?, mes? }
+// ---------------------------------------------------------------------------
+const getTareasPorRuts = async (req, res) => {
+    try {
+        if (!req.user?.id)
+            return res.status(401).json({ message: "No autorizado" });
+        const body = (req.body ?? {});
+        // trabajadorId: si viene en body úsalo, si no usa el del token
+        let trabajadorId;
+        if (body.trabajadorId != null) {
+            const parsed = Number(body.trabajadorId);
+            if (Number.isNaN(parsed)) {
+                return res.status(400).json({ message: "trabajadorId inválido" });
+            }
+            trabajadorId = parsed;
+        }
+        else {
+            trabajadorId = req.user.id;
+        }
+        const ruts = Array.from(new Set((body.ruts ?? []).map((r) => String(r ?? "").trim()).filter(Boolean)));
+        if (ruts.length === 0) {
+            return res.json({ tareas: [] });
+        }
+        // Filtro opcional por año/mes
+        let fechaFiltro;
+        if (body.anio != null && body.mes != null) {
+            const year = Number(body.anio);
+            const month = Number(body.mes);
+            if (Number.isNaN(year) || Number.isNaN(month) || month < 1 || month > 12) {
+                return res.status(400).json({ message: "anio/mes inválidos. Ej: { anio: 2025, mes: 12 }" });
+            }
+            const inicio = new Date(year, month - 1, 1);
+            const fin = new Date(year, month, 1);
+            fechaFiltro = { gte: inicio, lt: fin };
+        }
+        const where = {
+            trabajadorId,
+            rutCliente: { in: ruts },
+            estado: { not: "NO_APLICA" },
+        };
+        if (fechaFiltro)
+            where.fechaProgramada = fechaFiltro;
+        // ✅ IMPORTANTE: select en vez de include completo (menos payload)
+        const tareas = await prisma_1.prisma.tareaAsignada.findMany({
+            where,
+            orderBy: [{ rutCliente: "asc" }, { fechaProgramada: "asc" }],
+            include: {
+                tareaPlantilla: true,
+                asignado: { select: { id_trabajador: true, nombre: true, email: true } },
+            },
+        });
+        return res.json({ tareas });
+    }
+    catch (error) {
+        console.error("[getTareasPorRuts] error:", error);
+        return res.status(500).json({ message: "Error obteniendo tareas por ruts" });
+    }
+};
+exports.getTareasPorRuts = getTareasPorRuts;

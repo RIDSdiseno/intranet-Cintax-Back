@@ -8,6 +8,7 @@ r.get("/groups", auth_middleware_1.authGuard, tickets_controller_1.listTicketGro
 r.get("/", auth_middleware_1.authGuard, tickets_controller_1.listTickets);
 r.get("/inbox", auth_middleware_1.authGuard, tickets_controller_1.listTicketsInbox);
 r.get("/inbox/diagnostic", auth_middleware_1.authGuard, tickets_controller_1.diagnosticTicketsInbox);
+r.get("/agents", auth_middleware_1.authGuard, tickets_controller_1.listTicketAgents);
 r.post("/sync", auth_middleware_1.authGuard, tickets_controller_1.syncTickets);
 r.get("/:id", auth_middleware_1.authGuard, tickets_controller_1.getTicketDetail);
 r.get("/:id/messages", auth_middleware_1.authGuard, tickets_controller_1.listTicketMessages);

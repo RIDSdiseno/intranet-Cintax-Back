@@ -14,6 +14,7 @@ const trabajador_routes_1 = __importDefault(require("./routes/trabajador.routes"
 const tareas_routes_1 = __importDefault(require("./routes/tareas.routes"));
 const dashboard_routes_1 = __importDefault(require("./routes/dashboard.routes"));
 const error_middleware_js_1 = require("./middlewares/error.middleware.js");
+const requestId_middleware_1 = require("./middlewares/requestId.middleware");
 require("dotenv/config");
 const googleDrive_1 = require("./services/googleDrive");
 const notificaciones_routes_1 = __importDefault(require("./routes/notificaciones.routes"));
@@ -23,7 +24,6 @@ const date_fns_1 = require("date-fns");
 const prisma_1 = require("./lib/prisma");
 const client_1 = require("@prisma/client");
 const auth_controller_1 = require("./controllers/auth.controller");
-// ✅ NUEVO JOB (día 30 -> genera mes siguiente)
 const generarTareasMesSiguiente_1 = require("./jobs/generarTareasMesSiguiente");
 const tareas_masivo_routes_1 = __importDefault(require("./routes/tareas-masivo.routes"));
 // 👇 SUPER IMPORTANTE: log de versión
@@ -34,7 +34,17 @@ exports.app.set("trust proxy", 1);
 const ENABLE_TASK_CRON = process.env.ENABLE_TASK_CRON === "true";
 const ENABLE_GROUPS_CRON = process.env.ENABLE_GROUPS_CRON === "true";
 const ENABLE_NOTI_CRON = process.env.ENABLE_NOTI_CRON !== "false"; // default true
-const allowedOrigins = new Set((process.env.CORS_ORIGINS || "")
+// =============================
+// ✅ CORS (robusto)
+// =============================
+// fallback DEV si CORS_ORIGINS no está seteado
+const defaultDevOrigins = ["http://localhost:5173", "http://localhost:4173"];
+const rawOrigins = process.env.CORS_ORIGINS && process.env.CORS_ORIGINS.trim().length > 0
+    ? process.env.CORS_ORIGINS
+    : process.env.NODE_ENV !== "production"
+        ? defaultDevOrigins.join(",")
+        : "";
+const allowedOrigins = new Set(rawOrigins
     .split(",")
     .map((origin) => origin.trim())
     .filter(Boolean));
@@ -45,10 +55,13 @@ const corsForbiddenError = Object.assign(new Error("Not allowed by CORS"), {
 });
 const corsOptions = {
     origin: (origin, callback) => {
+        // Permite requests sin Origin (Postman/cURL/server-to-server)
         if (!origin)
             return callback(null, true);
         if (allowedOrigins.has(origin))
             return callback(null, true);
+        // Log útil para debug
+        console.warn("[CORS] Bloqueado origin:", origin, "Permitidos:", [...allowedOrigins]);
         return callback(corsForbiddenError);
     },
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
@@ -56,22 +69,34 @@ const corsOptions = {
     allowedHeaders: ["Content-Type", "Authorization"],
     optionsSuccessStatus: 204,
 };
+// ✅ CORS primero (antes de cualquier ruta)
 exports.app.use((0, cors_1.default)(corsOptions));
-exports.app.options(/^\/api\/.*$/, (0, cors_1.default)(corsOptions));
+// ✅ Preflight global (más robusto que regex)
+exports.app.options(/.*/, (0, cors_1.default)(corsOptions));
+// =============================
+// Middlewares base
+// =============================
 exports.app.use((0, cookie_parser_1.default)());
 exports.app.use(express_1.default.json({ limit: "20mb" }));
+exports.app.use(requestId_middleware_1.requestIdMiddleware);
 exports.app.use((0, morgan_1.default)("dev"));
 // 🔍 Ruta de debug de versión
 exports.app.get("/api/debug-version", (_req, res) => {
-    res.json({ ok: true, version: "cintax-tareas-v5" });
+    res.json({
+        ok: true,
+        version: "cintax-tareas-v5",
+        cors: {
+            credentials: corsCredentials,
+            origins: [...allowedOrigins],
+        },
+    });
 });
 // =============================
 // RUTAS API
 // =============================
 // ✅ Si tu routes.js tiene /auth, /clientes, etc.
 exports.app.use("/api", routes_js_1.default);
-// ✅ Trabajadores (incluye GET /trabajadores y PATCH /trabajadores/:id)
-//    (internamente el router ya tiene authGuard / requireSupervisorOrAdmin)
+// ✅ Trabajadores
 exports.app.use("/api", trabajador_routes_1.default);
 // ✅ Tareas
 exports.app.use("/api/tareas", tareas_routes_1.default);
@@ -79,6 +104,7 @@ exports.app.use("/api/tareas", tareas_routes_1.default);
 exports.app.use("/api/dashboard", dashboard_routes_1.default);
 // ✅ Notificaciones
 exports.app.use("/api/notificaciones", notificaciones_routes_1.default);
+// ✅ Tareas masivo (nota: esto queda en /api/tareas/*)
 exports.app.use("/api/tareas", tareas_masivo_routes_1.default);
 // Debug cookies (útil)
 exports.app.get("/debug/cookies", (req, res) => res.json({ cookies: req.cookies }));
@@ -218,8 +244,6 @@ exports.app.get("/debug/test-notificaciones", async (_req, res) => {
 });
 // ======================================================
 // ✅ ENDPOINT MANUAL: genera tareas MES SIGUIENTE
-// - default: solo corre si corresponde (día 30 o último)
-// - force=true: forzar ejecución como si fuera día 30
 // ======================================================
 exports.app.post("/api/tareas/generar-mes-siguiente", async (req, res) => {
     try {
@@ -244,7 +268,6 @@ exports.app.post("/api/tareas/generar-mes-siguiente", async (req, res) => {
 });
 // ======================================================
 // ✅ CRON TAREAS: corre TODOS los días (02:05)
-// pero el job decide si corresponde (día 30 / último día)
 // ======================================================
 if (ENABLE_TASK_CRON) {
     node_cron_1.default.schedule("5 2 * * *", async () => {

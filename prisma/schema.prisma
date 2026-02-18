@@ -148,10 +148,13 @@ model TareaAsignada {
   tareaPlantilla     TareaPlantilla @relation(fields: [tareaPlantillaId], references: [id_tarea_plantilla])
   asignado           Trabajador?    @relation("TrabajadorTareas", fields: [trabajadorId], references: [id_trabajador])
 
+  notificaciones     Notificacion[] @relation("NotificacionTarea")
+
   @@index([trabajadorId])
   @@index([rutCliente])
   @@index([tareaPlantillaId])
 }
+
 
 model Cliente {
   id            Int      @id @default(autoincrement())
@@ -169,14 +172,21 @@ model Cliente {
 }
 
 model Notificacion {
+  id           Int      @id @default(autoincrement())
   mensaje      String
   leida        Boolean  @default(false)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
   trabajadorId Int
   tareaId      Int
-  id           Int      @id @default(autoincrement())
+
+  tarea        TareaAsignada @relation("NotificacionTarea", fields: [tareaId], references: [id_tarea_asignada])
+
+  @@index([tareaId])
+  @@index([trabajadorId])
 }
+
+
 
 model ClienteTareaExclusion {
   id               Int       @id @default(autoincrement())

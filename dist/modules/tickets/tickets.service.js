@@ -6,6 +6,7 @@ exports.getGroupsForUser = getGroupsForUser;
 exports.getTicketsForUser = getTicketsForUser;
 exports.getInboxForUser = getInboxForUser;
 exports.getInboxDiagnosticForAdmin = getInboxDiagnosticForAdmin;
+exports.getTicketAgentsForUser = getTicketAgentsForUser;
 exports.getTicketDetailForUser = getTicketDetailForUser;
 exports.getTicketMessagesForUser = getTicketMessagesForUser;
 exports.createTicketMessageForUser = createTicketMessageForUser;
@@ -14,20 +15,7 @@ const client_1 = require("@prisma/client");
 const prisma_1 = require("../../lib/prisma");
 const ticketAccess_1 = require("./access/ticketAccess");
 const ticketRouting_1 = require("./routing/ticketRouting");
-function buildGroupWhere(slugs) {
-    const orClauses = [];
-    slugs.forEach((slug) => {
-        const group = (0, ticketRouting_1.areaFromSlug)(slug);
-        if (!group)
-            return;
-        orClauses.push({
-            trabajador: { areaInterna: group.area },
-        });
-    });
-    if (orClauses.length === 0)
-        return null;
-    return { OR: orClauses };
-}
+const tickets_logger_1 = require("./tickets.logger");
 function buildStatusWhere(status) {
     const key = status.trim().toLowerCase();
     const map = {
@@ -151,6 +139,21 @@ function normalizeOptionalString(value) {
     const trimmed = String(value).trim();
     return trimmed ? trimmed : null;
 }
+function getSlaHours() {
+    const parse = (value, fallback) => {
+        const n = Number(value);
+        if (!Number.isFinite(n) || n <= 0)
+            return fallback;
+        return Math.floor(n);
+    };
+    return {
+        firstResponse: parse(process.env.SLA_FIRST_RESPONSE_HOURS, 24),
+        resolution: parse(process.env.SLA_RESOLUTION_HOURS, 72),
+    };
+}
+function addHours(date, hours) {
+    return new Date(date.getTime() + hours * 60 * 60 * 1000);
+}
 function stripHtmlToText(raw) {
     const html = String(raw ?? "");
     if (!html)
@@ -215,12 +218,11 @@ function splitDescription(raw) {
     return { base, replies: [] };
 }
 async function getTicketForAccess(id, user) {
+    const ctx = await (0, ticketAccess_1.getUserContext)(prisma_1.prisma, user);
+    if (!ctx)
+        return null;
     const auth = (0, ticketAccess_1.getAuthTrabajador)(user);
     if (!auth)
-        return null;
-    const admin = (0, ticketAccess_1.isAdmin)(auth);
-    const areaInterna = await (0, ticketAccess_1.resolveTrabajadorArea)(prisma_1.prisma, auth.id_trabajador);
-    if (!admin && !areaInterna)
         return null;
     const ticket = await prisma_1.prisma.ticket.findFirst({
         where: { id_ticket: id },
@@ -228,10 +230,11 @@ async function getTicketForAccess(id, user) {
     });
     if (!ticket)
         return null;
-    const resolved = (0, ticketRouting_1.resolveTicketArea)(ticket);
-    if (!admin && (!resolved || resolved.area !== areaInterna))
+    const enforcedArea = (0, ticketAccess_1.enforceArea)(ctx, "all");
+    if (!ctx.isAdmin && !ticketMatchesEffectiveArea(ticket, enforcedArea.effectiveArea, false)) {
         return null;
-    return { ticket, auth, admin, areaInterna };
+    }
+    return { ticket, auth, admin: ctx.isAdmin, areaInterna: ctx.areaInterna };
 }
 function mapThreadMessage(row) {
     return {
@@ -253,64 +256,62 @@ function mapThreadMessage(row) {
             : null,
     };
 }
-async function getGroupsForUser(user) {
-    const auth = (0, ticketAccess_1.getAuthTrabajador)(user);
-    const admin = (0, ticketAccess_1.isAdmin)(auth ?? undefined);
-    if (!auth) {
-        return { totalAll: 0, groups: [] };
+function ticketMatchesEffectiveArea(ticket, effectiveArea, isAdminUser) {
+    const resolved = (0, ticketRouting_1.resolveTicketArea)(ticket);
+    if (effectiveArea === "all") {
+        if (isAdminUser)
+            return true;
+        return Boolean(resolved);
     }
-    const areaInterna = await (0, ticketAccess_1.resolveTrabajadorArea)(prisma_1.prisma, auth.id_trabajador);
-    const areaChips = (0, ticketRouting_1.getAreaChips)();
-    if (!admin && !areaInterna) {
+    return Boolean(resolved && resolved.slug === effectiveArea);
+}
+async function getGroupsForUser(params) {
+    const { user, requestId } = params;
+    const ctx = await (0, ticketAccess_1.getUserContext)(prisma_1.prisma, user);
+    if (!ctx) {
         return { totalAll: 0, groups: [] };
     }
     const candidates = await prisma_1.prisma.ticket.findMany({
         include: { trabajador: { select: { areaInterna: true } } },
     });
-    const counts = {};
-    areaChips.forEach((group) => {
-        counts[group.slug] = 0;
-    });
-    let totalAll = 0;
-    candidates.forEach((ticket) => {
-        const resolved = (0, ticketRouting_1.resolveTicketArea)(ticket);
-        if (!resolved) {
-            if (admin)
-                totalAll += 1;
-            return;
+    const allCount = candidates.filter((ticket) => ticketMatchesEffectiveArea(ticket, ctx.isAdmin ? "all" : ctx.userAreaSlug ?? "all", ctx.isAdmin)).length;
+    const groups = ctx.allowedAreas.map((slug) => {
+        if (slug === "all") {
+            return { slug: "all", name: "Todos", count: allCount };
         }
-        if (!admin && resolved.area !== areaInterna)
-            return;
-        totalAll += 1;
-        if (counts[resolved.slug] !== undefined) {
-            counts[resolved.slug] += 1;
-        }
+        const area = (0, ticketRouting_1.areaFromSlug)(slug);
+        const count = candidates.filter((ticket) => ticketMatchesEffectiveArea(ticket, slug, ctx.isAdmin)).length;
+        return {
+            slug,
+            name: area?.name ?? slug,
+            count,
+        };
     });
-    const groups = areaChips
-        .filter((group) => admin || group.area === areaInterna)
-        .map((group) => ({
-        slug: group.slug,
-        name: group.name,
-        count: counts[group.slug] ?? 0,
-    }));
-    console.info("tickets_groups", {
-        role: auth.role,
-        areaInterna,
-        groupsCount: groups.length,
+    (0, tickets_logger_1.logTicketInfo)({
+        action: "tickets_groups",
+        requestId,
+        userId: ctx.userId,
+        role: ctx.role,
+        meta: {
+            isAdmin: ctx.isAdmin,
+            areaInterna: ctx.areaInterna,
+            allowedAreas: ctx.allowedAreas,
+            groupsCount: groups.length,
+            counts: groups.map((g) => ({ slug: g.slug, count: g.count })),
+        },
     });
     return {
-        totalAll,
+        totalAll: allCount,
         groups,
     };
 }
 async function getTicketsForUser(params) {
-    const { user, area, q, status, priority } = params;
-    const auth = (0, ticketAccess_1.getAuthTrabajador)(user);
-    if (!auth)
+    const { user, area, q, status, priority, requestId } = params;
+    const ctx = await (0, ticketAccess_1.getUserContext)(prisma_1.prisma, user);
+    if (!ctx)
         return [];
-    const admin = (0, ticketAccess_1.isAdmin)(auth);
-    const areaInterna = await (0, ticketAccess_1.resolveTrabajadorArea)(prisma_1.prisma, auth.id_trabajador);
-    if (!admin && !areaInterna)
+    const forcedArea = (0, ticketAccess_1.enforceArea)(ctx, area);
+    if (!forcedArea.effectiveArea)
         return [];
     const filters = [];
     if (q && q.trim()) {
@@ -336,42 +337,19 @@ async function getTicketsForUser(params) {
         if (priorityWhere)
             filters.push(priorityWhere);
     }
-    if (!admin) {
-        filters.push({
-            OR: [{ trabajador: { areaInterna } }, { trabajadorId: null }],
-        });
-    }
-    if (admin && area && area !== "all") {
-        const areaWhere = buildGroupWhere([area]);
-        if (areaWhere) {
-            filters.push({
-                OR: [areaWhere, { trabajadorId: null }],
-            });
-        }
-    }
     const where = filters.length > 0 ? { AND: filters } : undefined;
     const rows = await prisma_1.prisma.ticket.findMany({
         where,
         include: { trabajador: { select: { areaInterna: true } } },
         orderBy: { createdAt: "desc" },
     });
-    const requestedArea = area ?? "all";
-    const effectiveArea = admin ? requestedArea : areaInterna?.toString() ?? "none";
+    const requestedArea = forcedArea.requestedArea;
+    const effectiveArea = forcedArea.effectiveArea;
     const results = [];
     rows.forEach((ticket) => {
+        if (!ticketMatchesEffectiveArea(ticket, effectiveArea, ctx.isAdmin))
+            return;
         const resolved = (0, ticketRouting_1.resolveTicketArea)(ticket);
-        if (!resolved) {
-            if (!admin && areaInterna)
-                return;
-            if (admin && area && area !== "all")
-                return;
-        }
-        else {
-            if (!admin && resolved.area !== areaInterna)
-                return;
-            if (admin && area && area !== "all" && resolved.slug !== area)
-                return;
-        }
         results.push({
             id: ticket.id_ticket,
             number: ticket.id_ticket,
@@ -388,22 +366,29 @@ async function getTicketsForUser(params) {
             createdAt: ticket.createdAt.toISOString(),
         });
     });
-    console.info("tickets_list", {
-        role: auth.role,
-        requestedArea,
-        effectiveArea,
-        resultCount: results.length,
+    (0, tickets_logger_1.logTicketInfo)({
+        action: "tickets_list",
+        requestId,
+        userId: ctx.userId,
+        role: ctx.role,
+        meta: {
+            isAdmin: ctx.isAdmin,
+            allowedAreas: ctx.allowedAreas,
+            requestedArea,
+            effectiveArea,
+            forced: forcedArea.forced,
+            resultCount: results.length,
+        },
     });
     return results;
 }
 async function getInboxForUser(params) {
-    const { user, area, q, status, priority, limit = 20 } = params;
-    const auth = (0, ticketAccess_1.getAuthTrabajador)(user);
-    if (!auth)
+    const { user, area, q, status, priority, limit = 20, requestId } = params;
+    const ctx = await (0, ticketAccess_1.getUserContext)(prisma_1.prisma, user);
+    if (!ctx)
         return [];
-    const admin = (0, ticketAccess_1.isAdmin)(auth);
-    const areaInterna = await (0, ticketAccess_1.resolveTrabajadorArea)(prisma_1.prisma, auth.id_trabajador);
-    if (!admin && !areaInterna)
+    const forcedArea = (0, ticketAccess_1.enforceArea)(ctx, area);
+    if (!forcedArea.effectiveArea)
         return [];
     const filters = [];
     if (q && q.trim()) {
@@ -428,19 +413,6 @@ async function getInboxForUser(params) {
         const priorityWhere = buildPriorityWhere(priority);
         if (priorityWhere)
             filters.push(priorityWhere);
-    }
-    if (!admin) {
-        filters.push({
-            OR: [{ trabajador: { areaInterna } }, { trabajadorId: null }],
-        });
-    }
-    if (admin && area && area !== "all") {
-        const areaWhere = buildGroupWhere([area]);
-        if (areaWhere) {
-            filters.push({
-                OR: [areaWhere, { trabajadorId: null }],
-            });
-        }
     }
     const where = filters.length > 0 ? { AND: filters } : undefined;
     const rows = await prisma_1.prisma.ticket.findMany({
@@ -449,17 +421,13 @@ async function getInboxForUser(params) {
         orderBy: { createdAt: "desc" },
         take: limit,
     });
+    const requestedArea = forcedArea.requestedArea;
+    const effectiveArea = forcedArea.effectiveArea;
     const results = [];
     rows.forEach((ticket) => {
+        if (!ticketMatchesEffectiveArea(ticket, effectiveArea, ctx.isAdmin))
+            return;
         const resolved = (0, ticketRouting_1.resolveTicketArea)(ticket);
-        if (!admin) {
-            if (!resolved || resolved.area !== areaInterna)
-                return;
-        }
-        else if (area && area !== "all") {
-            if (!resolved || resolved.slug !== area)
-                return;
-        }
         results.push({
             id: ticket.id_ticket,
             number: ticket.id_ticket,
@@ -476,10 +444,19 @@ async function getInboxForUser(params) {
             createdAt: ticket.createdAt.toISOString(),
         });
     });
-    console.info("tickets_inbox", {
-        role: auth.role,
-        areaInterna,
-        resultCount: results.length,
+    (0, tickets_logger_1.logTicketInfo)({
+        action: "tickets_inbox",
+        requestId,
+        userId: ctx.userId,
+        role: ctx.role,
+        meta: {
+            isAdmin: ctx.isAdmin,
+            allowedAreas: ctx.allowedAreas,
+            requestedArea,
+            effectiveArea,
+            forced: forcedArea.forced,
+            resultCount: results.length,
+        },
     });
     return results;
 }
@@ -515,6 +492,36 @@ async function getInboxDiagnosticForAdmin(params) {
         })),
     };
 }
+async function getTicketAgentsForUser(params) {
+    const { user, requestId } = params;
+    const auth = (0, ticketAccess_1.getAuthTrabajador)(user);
+    if (!auth)
+        return [];
+    if (!["ADMIN", "SUPERVISOR", "AGENTE"].includes(auth.role)) {
+        return [];
+    }
+    const agents = await prisma_1.prisma.trabajador.findMany({
+        where: {
+            areaInterna: { not: null },
+            status: true,
+        },
+        select: {
+            id_trabajador: true,
+            nombre: true,
+            email: true,
+            areaInterna: true,
+        },
+        orderBy: [{ areaInterna: "asc" }, { nombre: "asc" }],
+    });
+    (0, tickets_logger_1.logTicketInfo)({
+        action: "tickets_agents_list",
+        requestId,
+        userId: auth.id_trabajador,
+        role: auth.role,
+        meta: { count: agents.length },
+    });
+    return agents;
+}
 async function getTicketDetailForUser(id, user) {
     const access = await getTicketForAccess(id, user);
     if (!access)
@@ -540,6 +547,26 @@ async function getTicketDetailForUser(id, user) {
         console.warn("TicketMessage table missing, returning legacy thread only.");
         dbMessages = [];
     }
+    let hasFirstPublicReply = false;
+    try {
+        const firstReply = await prisma_1.prisma.ticketMessage.findFirst({
+            where: { ticketId: ticket.id_ticket, type: client_1.TicketMessageType.PUBLIC_REPLY },
+            select: { id: true },
+        });
+        hasFirstPublicReply = Boolean(firstReply);
+    }
+    catch (err) {
+        if (!isMissingTicketMessageTable(err)) {
+            throw err;
+        }
+        hasFirstPublicReply = false;
+    }
+    const slaHours = getSlaHours();
+    const firstResponseDueAt = addHours(ticket.createdAt, slaHours.firstResponse).toISOString();
+    const resolutionDueAt = addHours(ticket.createdAt, slaHours.resolution).toISOString();
+    const normalizedEstado = normalizeEstadoInput(ticket.estado);
+    const resolutionStatus = normalizedEstado === "CERRADO" ? "OK" : "PENDIENTE";
+    const firstResponseStatus = hasFirstPublicReply ? "OK" : "PENDIENTE";
     const legacyReplies = replies.map((reply) => ({
         id: reply.id,
         authorEmail: reply.authorEmail || "sin-correo@cintax.cl",
@@ -576,11 +603,18 @@ async function getTicketDetailForUser(id, user) {
         description: base,
         requesterEmail: ticket.requesterEmail || "Sin correo",
         group: toGroupLabel(ticket.categoria),
+        categoria: ticket.categoria ?? null,
         status: toStatusLabel(ticket.estado),
+        estado: ticket.estado ?? null,
         priority: toPriorityLabel(ticket.prioridad),
+        prioridad: ticket.prioridad ?? null,
         createdAt: ticket.createdAt.toISOString(),
         updatedAt: ticket.updatedAt.toISOString(),
         trabajadorId: ticket.trabajadorId ?? null,
+        firstResponseDueAt,
+        resolutionDueAt,
+        firstResponseStatus,
+        resolutionStatus,
     };
     return { ticket: detail, messages };
 }
@@ -683,12 +717,8 @@ async function createTicketMessageForUser(params) {
 }
 async function updateTicketForUser(params) {
     const { id, user, estado, prioridad, categoria, trabajadorId } = params;
-    const auth = (0, ticketAccess_1.getAuthTrabajador)(user);
-    if (!auth)
-        return null;
-    const admin = (0, ticketAccess_1.isAdmin)(auth);
-    const areaInterna = await (0, ticketAccess_1.resolveTrabajadorArea)(prisma_1.prisma, auth.id_trabajador);
-    if (!admin && !areaInterna)
+    const ctx = await (0, ticketAccess_1.getUserContext)(prisma_1.prisma, user);
+    if (!ctx)
         return null;
     const ticket = await prisma_1.prisma.ticket.findFirst({
         where: { id_ticket: id },
@@ -696,9 +726,10 @@ async function updateTicketForUser(params) {
     });
     if (!ticket)
         return null;
-    const resolved = (0, ticketRouting_1.resolveTicketArea)(ticket);
-    if (!admin && (!resolved || resolved.area !== areaInterna))
+    const enforcedArea = (0, ticketAccess_1.enforceArea)(ctx, "all");
+    if (!ctx.isAdmin && !ticketMatchesEffectiveArea(ticket, enforcedArea.effectiveArea, false)) {
         return null;
+    }
     const data = {};
     if (estado && estado.trim()) {
         data.estado = normalizeEstadoInput(estado);
