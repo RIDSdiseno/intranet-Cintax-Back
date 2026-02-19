@@ -39,7 +39,7 @@ model RefreshToken {
 }
 
 model Ticket {
-  id_ticket      Int         @id @default(autoincrement())
+  id_ticket      Int          @id @default(autoincrement())
   subject        String
   description    String
   categoria      String
@@ -47,19 +47,18 @@ model Ticket {
   prioridad      Int?
   requesterEmail String
 
-  freshdeskId    Int?        @unique
+  freshdeskId    Int?         @unique
   trabajadorId   Int?
-  createdAt      DateTime    @default(now())
-  updatedAt      DateTime    @updatedAt
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
 
-  gmailThreadId  String?     @unique
+  gmailThreadId  String?      @unique
   source         TicketSource @default(MANUAL)
 
-  // ✅ NUEVO: Grupo/Área asignada al ticket (bandeja)
   areaAsignada   Area?
 
-  trabajador     Trabajador? @relation(fields: [trabajadorId], references: [id_trabajador])
-  messages       TicketMessage[] @relation("TicketMessages")
+  trabajador     Trabajador?     @relation(fields: [trabajadorId], references: [id_trabajador])
+  messages       TicketMessage[]  @relation("TicketMessages")
 
   @@index([createdAt])
   @@index([estado])
@@ -67,16 +66,14 @@ model Ticket {
   @@index([areaAsignada])
 }
 
-
 model TicketMessage {
-  id                 Int               @id @default(autoincrement())
+  id                 Int                   @id @default(autoincrement())
   ticketId           Int
   authorTrabajadorId Int?
   type               TicketMessageType
   direction          TicketMessageDirection @default(INBOUND)
 
-  // ✅ Nuevo: para deduplicar mensajes Gmail
-  gmailMessageId     String?           @unique
+  gmailMessageId     String?               @unique
 
   toEmail            String?
   cc                 String?
@@ -84,10 +81,10 @@ model TicketMessage {
   subject            String?
   bodyHtml           String
   bodyText           String?
-  createdAt          DateTime          @default(now())
+  createdAt          DateTime              @default(now())
 
-  ticket             Ticket            @relation("TicketMessages", fields: [ticketId], references: [id_ticket], onDelete: Cascade)
-  author             Trabajador?       @relation("TicketMessageAuthor", fields: [authorTrabajadorId], references: [id_trabajador], onDelete: SetNull)
+  ticket             Ticket                @relation("TicketMessages", fields: [ticketId], references: [id_ticket], onDelete: Cascade)
+  author             Trabajador?           @relation("TicketMessageAuthor", fields: [authorTrabajadorId], references: [id_trabajador], onDelete: SetNull)
 
   attachments        TicketAttachment[]
 
@@ -113,6 +110,11 @@ model TareaPlantilla {
   id_tarea_plantilla   Int             @id @default(autoincrement())
   area                 Area
   nombre               String
+
+  // ✅ NUEVO: clave normalizada para evitar duplicados por MAY/MIN/espacios
+  // Ej: "Declaración IVA" -> "declaración iva"
+  nombreNorm           String          @unique
+
   detalle              String
   frecuenciaTexto      String?
   plazoMaximoTexto     String?
@@ -153,12 +155,15 @@ model TareaAsignada {
   @@index([trabajadorId])
   @@index([rutCliente])
   @@index([tareaPlantillaId])
-}
 
+  // ✅ NUEVO: evita repetir tareas programadas para el mismo cliente y plantilla en la misma fecha
+  // Ojo: como rutCliente es nullable, los NULL no chocan entre sí (comportamiento Postgres).
+  @@unique([rutCliente, tareaPlantillaId, fechaProgramada])
+}
 
 model Cliente {
   id            Int      @id @default(autoincrement())
-  rut           String
+  rut           String   @unique   // ✅ NUEVO: evita duplicados de cliente por RUT
   razonSocial   String
   alias         String?
   activo        Boolean  @default(true)
@@ -185,8 +190,6 @@ model Notificacion {
   @@index([tareaId])
   @@index([trabajadorId])
 }
-
-
 
 model ClienteTareaExclusion {
   id               Int       @id @default(autoincrement())
