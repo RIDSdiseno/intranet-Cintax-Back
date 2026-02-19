@@ -26,6 +26,7 @@ const client_1 = require("@prisma/client");
 const auth_controller_1 = require("./controllers/auth.controller");
 const generarTareasMesSiguiente_1 = require("./jobs/generarTareasMesSiguiente");
 const tareas_masivo_routes_1 = __importDefault(require("./routes/tareas-masivo.routes"));
+const normNombrePlantilla_1 = require("./utils/normNombrePlantilla");
 // 👇 SUPER IMPORTANTE: log de versión
 console.log("⚙️ [APP] Cargando app.ts **CINTAX TAREAS V5**");
 exports.app = (0, express_1.default)();
@@ -162,11 +163,12 @@ exports.app.get("/debug/test-notificaciones", async (_req, res) => {
                 plantilla = await prisma_1.prisma.tareaPlantilla.create({
                     data: {
                         nombre,
+                        nombreNorm: (0, normNombrePlantilla_1.normNombrePlantilla)(nombre),
                         detalle,
-                        area: client_1.Area.CONTA,
-                        frecuencia: client_1.FrecuenciaTarea.UNICA,
-                        presentacion: client_1.Presentacion.INTERNO,
-                    },
+                        area: "CONTA",
+                        frecuencia: "UNICA",
+                        presentacion: "INTERNO",
+                    }
                 });
             }
             return plantilla;

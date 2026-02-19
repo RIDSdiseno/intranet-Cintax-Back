@@ -31,6 +31,7 @@ import { syncAreasFromGroupsCore } from "./controllers/auth.controller";
 import { generarTareasMesSiguiente } from "./jobs/generarTareasMesSiguiente";
 import tareasMasivoRoutes from "./routes/tareas-masivo.routes";
 
+import { normNombrePlantilla } from "./utils/normNombrePlantilla"; 
 // 👇 SUPER IMPORTANTE: log de versión
 console.log("⚙️ [APP] Cargando app.ts **CINTAX TAREAS V5**");
 
@@ -204,11 +205,12 @@ app.get("/debug/test-notificaciones", async (_req: Request, res: Response) => {
         plantilla = await prisma.tareaPlantilla.create({
           data: {
             nombre,
+            nombreNorm: normNombrePlantilla(nombre),
             detalle,
-            area: Area.CONTA,
-            frecuencia: FrecuenciaTarea.UNICA,
-            presentacion: Presentacion.INTERNO,
-          },
+            area: "CONTA",
+            frecuencia: "UNICA",
+            presentacion: "INTERNO",
+          }
         });
       }
 

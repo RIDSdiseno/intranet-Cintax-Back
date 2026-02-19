@@ -8,46 +8,57 @@ const prisma_1 = require("../lib/prisma");
 // Lista de notificaciones con filtros por mes/año
 // =============================================
 const getNotificaciones = async (req, res) => {
-    const trabajadorId = req.user?.id;
-    if (!trabajadorId) {
+    const trabajadorIdRaw = req.user?.id;
+    const trabajadorId = typeof trabajadorIdRaw === "string"
+        ? Number(trabajadorIdRaw)
+        : trabajadorIdRaw;
+    if (!trabajadorId || !Number.isFinite(trabajadorId)) {
         return res.status(401).json({ message: "No autorizado" });
     }
     try {
-        const { mes, anio } = req.query;
-        let where = { trabajadorId };
+        const mesRaw = req.query.mes;
+        const anioRaw = req.query.anio;
+        const where = { trabajadorId };
         // -------------------------------------------
         // FILTRO POR MES / AÑO (vencimiento de tarea)
         // -------------------------------------------
-        if (mes && anio) {
-            const month = Number(mes);
-            const year = Number(anio);
-            const inicioMes = new Date(year, month - 1, 1);
-            const finMes = new Date(year, month, 0, 23, 59, 59);
-            const tareasFiltradas = await prisma_1.prisma.tareaAsignada.findMany({
-                where: {
-                    fechaProgramada: {
-                        gte: inicioMes,
-                        lte: finMes,
-                    },
+        if (mesRaw != null && anioRaw != null) {
+            const month = Number(mesRaw);
+            const year = Number(anioRaw);
+            if (!Number.isFinite(month) || month < 1 || month > 12) {
+                return res.status(400).json({ message: "mes inválido (1-12)" });
+            }
+            if (!Number.isFinite(year) || year < 1900 || year > 3000) {
+                return res.status(400).json({ message: "anio inválido" });
+            }
+            const inicioMes = new Date(year, month - 1, 1, 0, 0, 0);
+            const finMes = new Date(year, month, 0, 23, 59, 59, 999);
+            // ✅ filtra directamente por la relación hacia la tarea
+            where.tarea = {
+                fechaProgramada: {
+                    gte: inicioMes,
+                    lte: finMes,
                 },
-                select: { id_tarea_asignada: true },
-            });
-            const ids = tareasFiltradas.map((t) => t.id_tarea_asignada);
-            where.tareaId = { in: ids };
+            };
         }
         // -------------------------------------------
         // CONSULTA FINAL
         // -------------------------------------------
         const notificaciones = await prisma_1.prisma.notificacion.findMany({
             where,
-            include: {
+            orderBy: { createdAt: "desc" },
+            select: {
+                id: true,
+                mensaje: true,
+                leida: true,
+                createdAt: true,
+                updatedAt: true,
+                trabajadorId: true,
+                tareaId: true,
                 tarea: { select: { fechaProgramada: true } },
             },
-            orderBy: { createdAt: "desc" },
         });
-        // Por si acaso, eliminar duplicados
-        const sinDuplicados = Array.from(new Map(notificaciones.map((n) => [n.id, n])).values());
-        return res.json(sinDuplicados);
+        return res.json(notificaciones);
     }
     catch (error) {
         console.error("Error obteniendo notificaciones:", error);
