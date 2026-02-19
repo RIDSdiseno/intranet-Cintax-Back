@@ -10,13 +10,32 @@ const requireAuth_1 = require("../middlewares/requireAuth");
 const correoTareas_controller_1 = require("../controllers/correoTareas.controller");
 // ✅ Controlador de tareas
 const tareas_Controller_1 = require("../controllers/tareas.Controller");
+// ✅ NUEVO: carga masiva desde Excel (crea cliente/plantilla si no existe)
+const tareas_masivo_excel_controller_1 = require("../controllers/tareas.masivo.excel.controller");
 // ✅ Controlador de métricas
 const tareasMetricas_controller_1 = require("../controllers/tareasMetricas.controller");
 const router = (0, express_1.Router)();
-// Multer para subir archivos a tareas
-const upload = (0, multer_1.default)();
-// Multer para adjuntos en correo
-const uploadCorreo = (0, multer_1.default)({ storage: multer_1.default.memoryStorage() });
+// =====================
+// Multer configs
+// =====================
+const memoryStorage = multer_1.default.memoryStorage();
+// Para subir archivos a tareas (Drive)
+const upload = (0, multer_1.default)({ storage: memoryStorage });
+// Para adjuntos en correo
+const uploadCorreo = (0, multer_1.default)({ storage: memoryStorage });
+// ✅ Excel masivo
+const uploadExcel = (0, multer_1.default)({
+    storage: memoryStorage,
+    limits: { fileSize: 15 * 1024 * 1024 }, // 15MB
+    fileFilter: (_req, file, cb) => {
+        const ok = file.mimetype ===
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" || // .xlsx
+            file.mimetype === "application/vnd.ms-excel"; // .xls (por si acaso)
+        if (!ok)
+            return cb(new Error("Archivo inválido. Debe ser .xlsx (o .xls)."));
+        cb(null, true);
+    },
+});
 // =====================
 // Rutas base de Tareas
 // =====================
@@ -38,9 +57,29 @@ router.get("/por-plantilla/:idPlantilla", requireAuth_1.requireAuth, tareas_Cont
 // Eliminar plantilla con tareas
 router.delete("/plantillas/:id", requireAuth_1.requireAuth, tareas_Controller_1.eliminarPlantillaConTareas);
 // =====================
-// Asignación masiva desde plantilla
+// Asignación masiva desde plantilla (manual, 1 trabajador para todos)
 // =====================
 router.post("/crear-desde-plantilla", requireAuth_1.requireAuth, tareas_Controller_1.crearTareasDesdePlantilla);
+// =====================
+// ✅ Masivo desde Excel
+// POST /tareas/masivo/excel
+// form-data: archivo=<xlsx>
+//
+// Query opcional:
+// - ?skipDuplicates=true|false            (default true)
+// - ?fechaProgramada=YYYY-MM-DD          (default si la fila no trae fecha)
+// - ?agenteId=123                        (default para clientes nuevos o sin agenteId)
+//
+// Columnas Excel aceptadas (case-insensitive):
+// - rut / RUT
+// - fechaProgramada / fecha / vencimiento   (o usar query fechaProgramada)
+// - plantillaIds / plantillas / plantillaId (IDs: "81,82,83")
+//   o
+// - tarea / tareas / plantillaNombre / plantilla (nombres: "Declaración IVA; Libro compras")
+// - razonSocial / empresa (recomendado para crear cliente)
+// - agenteId / trabajadorId (opcional)
+// =====================
+router.post("/masivo/excel", requireAuth_1.requireAuth, uploadExcel.single("archivo"), tareas_masivo_excel_controller_1.cargarTareasDesdeExcel);
 // =====================
 // Tareas asignadas (estado / archivos / resumen)
 // =====================
@@ -61,13 +100,11 @@ router.get("/supervision/metricas", requireAuth_1.requireAuth, tareasMetricas_co
 router.get("/supervision/metricas/agente/:id", requireAuth_1.requireAuth, tareasMetricas_controller_1.getMetricasAgente);
 // =====================
 // Estado "no aplica" + editor de tareas
-// (ANTES estaban sin auth → los dejo protegidos)
 // =====================
 router.get("/plantillas-con-aplica", requireAuth_1.requireAuth, tareas_Controller_1.listPlantillasConAplicaPorCliente);
 router.patch("/exclusion", requireAuth_1.requireAuth, tareas_Controller_1.upsertClienteTareaExclusion);
 // =====================
 // Tareas asignadas por cliente y trabajador
-// (ANTES estaba sin auth; normalmente debe ir protegido)
 // =====================
 router.get("/asignadas", requireAuth_1.requireAuth, tareas_Controller_1.getTareasAsignadasPorClienteYTrabajador);
 // =====================

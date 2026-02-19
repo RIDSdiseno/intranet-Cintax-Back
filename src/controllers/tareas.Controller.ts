@@ -8,6 +8,7 @@ import { Area } from "@prisma/client";
 import { getAdminDriveClient } from "../lib/googleDrive";
 import type { drive_v3 } from "googleapis";
 import { Readable } from "stream";
+import { normNombrePlantilla } from "../utils/normNombrePlantilla";
 
 // Helper para convertir Buffer → ReadableStream
 function bufferToStream(buffer: Buffer): Readable {
@@ -251,6 +252,7 @@ export const crearPlantilla = async (req: AuthRequest, res: Response) => {
       data: {
         area: area as any,
         nombre,
+        nombreNorm: normNombrePlantilla(nombre),
         detalle,
         frecuencia: frecuencia as any,
         presentacion: presentacion as any,

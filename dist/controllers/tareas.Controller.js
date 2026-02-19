@@ -7,6 +7,7 @@ const driveContaTasks_1 = require("../services/driveContaTasks");
 const client_1 = require("@prisma/client");
 const googleDrive_1 = require("../lib/googleDrive");
 const stream_1 = require("stream");
+const normNombrePlantilla_1 = require("../utils/normNombrePlantilla");
 // Helper para convertir Buffer → ReadableStream
 function bufferToStream(buffer) {
     const readable = new stream_1.Readable();
@@ -219,6 +220,7 @@ const crearPlantilla = async (req, res) => {
             data: {
                 area: area,
                 nombre,
+                nombreNorm: (0, normNombrePlantilla_1.normNombrePlantilla)(nombre),
                 detalle,
                 frecuencia: frecuencia,
                 presentacion: presentacion,
