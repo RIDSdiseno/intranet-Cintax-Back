@@ -23,19 +23,39 @@ import {
   getTareasPorRuts, // POST /por-ruts
 } from "../controllers/tareas.Controller";
 
+// ✅ NUEVO: carga masiva desde Excel (crea cliente/plantilla si no existe)
+import { cargarTareasDesdeExcel } from "../controllers/tareas.masivo.excel.controller";
+
 // ✅ Controlador de métricas
-import {
-  getMetricasSupervision,
-  getMetricasAgente,
-} from "../controllers/tareasMetricas.controller";
+import { getMetricasSupervision, getMetricasAgente } from "../controllers/tareasMetricas.controller";
 
 const router = Router();
 
-// Multer para subir archivos a tareas
-const upload = multer();
+// =====================
+// Multer configs
+// =====================
 
-// Multer para adjuntos en correo
-const uploadCorreo = multer({ storage: multer.memoryStorage() });
+const memoryStorage = multer.memoryStorage();
+
+// Para subir archivos a tareas (Drive)
+const upload = multer({ storage: memoryStorage });
+
+// Para adjuntos en correo
+const uploadCorreo = multer({ storage: memoryStorage });
+
+// ✅ Excel masivo
+const uploadExcel = multer({
+  storage: memoryStorage,
+  limits: { fileSize: 15 * 1024 * 1024 }, // 15MB
+  fileFilter: (_req, file, cb) => {
+    const ok =
+      file.mimetype ===
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" || // .xlsx
+      file.mimetype === "application/vnd.ms-excel"; // .xls (por si acaso)
+    if (!ok) return cb(new Error("Archivo inválido. Debe ser .xlsx (o .xls)."));
+    cb(null, true);
+  },
+});
 
 // =====================
 // Rutas base de Tareas
@@ -67,10 +87,32 @@ router.get("/por-plantilla/:idPlantilla", requireAuth, getTareasPorPlantilla);
 router.delete("/plantillas/:id", requireAuth, eliminarPlantillaConTareas);
 
 // =====================
-// Asignación masiva desde plantilla
+// Asignación masiva desde plantilla (manual, 1 trabajador para todos)
 // =====================
 
 router.post("/crear-desde-plantilla", requireAuth, crearTareasDesdePlantilla);
+
+// =====================
+// ✅ Masivo desde Excel
+// POST /tareas/masivo/excel
+// form-data: archivo=<xlsx>
+//
+// Query opcional:
+// - ?skipDuplicates=true|false            (default true)
+// - ?fechaProgramada=YYYY-MM-DD          (default si la fila no trae fecha)
+// - ?agenteId=123                        (default para clientes nuevos o sin agenteId)
+//
+// Columnas Excel aceptadas (case-insensitive):
+// - rut / RUT
+// - fechaProgramada / fecha / vencimiento   (o usar query fechaProgramada)
+// - plantillaIds / plantillas / plantillaId (IDs: "81,82,83")
+//   o
+// - tarea / tareas / plantillaNombre / plantilla (nombres: "Declaración IVA; Libro compras")
+// - razonSocial / empresa (recomendado para crear cliente)
+// - agenteId / trabajadorId (opcional)
+// =====================
+
+router.post("/masivo/excel", requireAuth, uploadExcel.single("archivo"), cargarTareasDesdeExcel);
 
 // =====================
 // Tareas asignadas (estado / archivos / resumen)
@@ -100,7 +142,6 @@ router.get("/supervision/metricas/agente/:id", requireAuth, getMetricasAgente);
 
 // =====================
 // Estado "no aplica" + editor de tareas
-// (ANTES estaban sin auth → los dejo protegidos)
 // =====================
 
 router.get("/plantillas-con-aplica", requireAuth, listPlantillasConAplicaPorCliente);
@@ -108,7 +149,6 @@ router.patch("/exclusion", requireAuth, upsertClienteTareaExclusion);
 
 // =====================
 // Tareas asignadas por cliente y trabajador
-// (ANTES estaba sin auth; normalmente debe ir protegido)
 // =====================
 
 router.get("/asignadas", requireAuth, getTareasAsignadasPorClienteYTrabajador);
