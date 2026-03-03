@@ -450,3 +450,4 @@ const updateTicket = async (req, res) => {
     }
 };
 exports.updateTicket = updateTicket;
+//# sourceMappingURL=tickets.controller.js.map

@@ -127,3 +127,4 @@ const reactivarTareaParaCliente = async (req, res) => {
     }
 };
 exports.reactivarTareaParaCliente = reactivarTareaParaCliente;
+//# sourceMappingURL=clienteTareaExclusion.controller.js.map

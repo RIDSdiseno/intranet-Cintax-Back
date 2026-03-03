@@ -222,3 +222,4 @@ const updateTrabajador = async (req, res) => {
     }
 };
 exports.updateTrabajador = updateTrabajador;
+//# sourceMappingURL=trabajador.controller.js.map

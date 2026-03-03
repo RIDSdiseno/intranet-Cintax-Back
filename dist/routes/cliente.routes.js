@@ -25,3 +25,4 @@ router.get("/:rut/exclusiones-tareas", requireAuth_1.requireAuth, clienteTareaEx
 router.post("/:rut/exclusiones-tareas", requireAuth_1.requireAuth, clienteTareaExclusion_controller_1.excluirTareaParaCliente);
 router.delete("/:rut/exclusiones-tareas/:tareaPlantillaId", requireAuth_1.requireAuth, clienteTareaExclusion_controller_1.reactivarTareaParaCliente);
 exports.default = router;
+//# sourceMappingURL=cliente.routes.js.map

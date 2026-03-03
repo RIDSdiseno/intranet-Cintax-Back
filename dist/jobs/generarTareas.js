@@ -162,3 +162,4 @@ async function generarTareasAutomaticas(fechaReferencia = new Date()) {
         // aquí podrías hacerlo comprobando trabajadorId = null de forma similar.
     }
 }
+//# sourceMappingURL=generarTareas.js.map

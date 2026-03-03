@@ -9,3 +9,4 @@ function normNombrePlantilla(nombre) {
         .normalize("NFD")
         .replace(/[\u0300-\u036f]/g, ""); // quita tildes
 }
+//# sourceMappingURL=normNombrePlantilla.js.map

@@ -23,3 +23,4 @@ r.get("/tareas-asignadas", auth_middleware_1.authGuard, auth_controller_1.listTa
 // 📂 Drive
 r.get("/drive/connect", auth_middleware_1.authGuard, auth_controller_1.connectDrive);
 exports.default = r;
+//# sourceMappingURL=auth.route.js.map

@@ -117,3 +117,4 @@ async function syncTicketsFromFreshdesk(perPage = 100) {
     }
     return totalProcessed;
 }
+//# sourceMappingURL=freshdeskService.js.map

@@ -65,3 +65,4 @@ async function getFullPathFromId(drive, fileId) {
     }
     return { ids, names };
 }
+//# sourceMappingURL=googleDrivePath.js.map

@@ -41,3 +41,4 @@ function getAdminDriveClient() {
     client.setCredentials({ refresh_token: refreshToken });
     return googleapis_1.google.drive({ version: "v3", auth: client });
 }
+//# sourceMappingURL=googleDrive.js.map

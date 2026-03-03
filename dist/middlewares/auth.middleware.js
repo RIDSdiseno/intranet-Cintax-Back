@@ -71,3 +71,4 @@ const requireSupervisorOrAdmin = (req, res, next) => {
     return next();
 };
 exports.requireSupervisorOrAdmin = requireSupervisorOrAdmin;
+//# sourceMappingURL=auth.middleware.js.map

@@ -152,3 +152,4 @@ function areaToSlug(area) {
         return null;
     return AREA_UI_MAP[area]?.slug ?? null;
 }
+//# sourceMappingURL=ticketRouting.js.map

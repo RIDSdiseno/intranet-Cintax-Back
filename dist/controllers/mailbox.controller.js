@@ -371,3 +371,4 @@ const syncMailboxInbox = async (req, res) => {
     }
 };
 exports.syncMailboxInbox = syncMailboxInbox;
+//# sourceMappingURL=mailbox.controller.js.map

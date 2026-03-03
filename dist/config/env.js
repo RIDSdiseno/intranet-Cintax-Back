@@ -15,3 +15,4 @@ exports.env = {
     JWT_EXPIRES_IN: process.env.JWT_EXPIRES_IN || '1d',
     DATABASE_URL: process.env.DATABASE_URL || '',
 };
+//# sourceMappingURL=env.js.map

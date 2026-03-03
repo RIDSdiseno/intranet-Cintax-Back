@@ -165,3 +165,4 @@ async function generarTareasMesSiguiente(fechaReferencia = new Date(), opts) {
         skippedApprox: Math.max(0, toCreate.length - result.count),
     };
 }
+//# sourceMappingURL=generarTareasMesSiguiente.js.map

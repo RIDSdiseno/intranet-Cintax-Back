@@ -9,3 +9,4 @@ router.get("/trabajadores", auth_middleware_1.authGuard, trabajador_controller_1
 // 🔒 Update: solo supervisor/admin (doble seguro: middleware + controller)
 router.patch("/trabajadores/:id", auth_middleware_1.authGuard, auth_middleware_1.requireSupervisorOrAdmin, trabajador_controller_1.updateTrabajador);
 exports.default = router;
+//# sourceMappingURL=trabajador.routes.js.map

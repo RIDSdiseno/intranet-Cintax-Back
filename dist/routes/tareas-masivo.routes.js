@@ -7,3 +7,4 @@ const tareas_masivo_controller_1 = require("../controllers/tareas.masivo.control
 const router = (0, express_1.Router)();
 router.post("/crear-desde-plantilla-masivo", auth_middleware_1.authGuard, auth_middleware_1.requireSupervisorOrAdmin, tareas_masivo_controller_1.crearDesdePlantillaMasivo);
 exports.default = router;
+//# sourceMappingURL=tareas-masivo.routes.js.map

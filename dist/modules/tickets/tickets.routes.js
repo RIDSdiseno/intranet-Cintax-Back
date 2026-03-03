@@ -16,3 +16,4 @@ r.post("/:id/messages", auth_middleware_1.authGuard, tickets_controller_1.create
 r.post("/:id/reply", auth_middleware_1.authGuard, tickets_controller_1.replyTicketStub);
 r.patch("/:id", auth_middleware_1.authGuard, tickets_controller_1.updateTicket);
 exports.default = r;
+//# sourceMappingURL=tickets.routes.js.map

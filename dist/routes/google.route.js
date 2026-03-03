@@ -25,3 +25,4 @@ r.post("/folder/:id/upload", auth_middleware_1.authGuard, upload.single("file"),
 // Sync de áreas según grupos de Google
 r.post("/trabajadores/sync-areas", auth_middleware_1.authGuard, auth_controller_1.syncAreasFromGroups);
 exports.default = r;
+//# sourceMappingURL=google.route.js.map

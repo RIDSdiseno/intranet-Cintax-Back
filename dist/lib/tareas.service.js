@@ -71,3 +71,4 @@ async function obtenerTareasPorTrabajador(opts) {
     });
     return analistas;
 }
+//# sourceMappingURL=tareas.service.js.map

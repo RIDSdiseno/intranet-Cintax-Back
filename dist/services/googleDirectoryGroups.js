@@ -30,3 +30,4 @@ async function listGroupMembersEmails(groupEmail) {
         .filter(m => !!m.email)
         .map(m => m.email.toLowerCase());
 }
+//# sourceMappingURL=googleDirectoryGroups.js.map

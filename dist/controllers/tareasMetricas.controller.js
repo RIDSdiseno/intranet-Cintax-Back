@@ -475,3 +475,4 @@ const getMetricasAgente = async (req, res) => {
     }
 };
 exports.getMetricasAgente = getMetricasAgente;
+//# sourceMappingURL=tareasMetricas.controller.js.map

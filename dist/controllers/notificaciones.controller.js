@@ -219,3 +219,4 @@ const marcarTodasComoLeidas = async (req, res) => {
     }
 };
 exports.marcarTodasComoLeidas = marcarTodasComoLeidas;
+//# sourceMappingURL=notificaciones.controller.js.map

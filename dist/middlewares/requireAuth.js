@@ -24,3 +24,4 @@ const requireAuth = (req, res, next) => {
     }
 };
 exports.requireAuth = requireAuth;
+//# sourceMappingURL=requireAuth.js.map

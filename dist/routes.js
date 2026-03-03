@@ -10,6 +10,7 @@ const google_route_1 = __importDefault(require("./routes/google.route"));
 const cliente_routes_1 = __importDefault(require("./routes/cliente.routes"));
 const tickets_routes_1 = __importDefault(require("./routes/tickets.routes"));
 const mailbox_routes_1 = __importDefault(require("./routes/mailbox.routes"));
+const bitacora_routes_1 = __importDefault(require("./routes/bitacora.routes"));
 const router = (0, express_1.Router)();
 // =============================
 //  HEALTHCHECK
@@ -35,4 +36,9 @@ router.use("/tickets", tickets_routes_1.default);
 //  MAILBOX (lectura Gmail)
 // =============================
 router.use("/mailbox", mailbox_routes_1.default);
+//=============================
+//  BITACORA
+// =============================
+router.use("/bitacoras", bitacora_routes_1.default);
 exports.default = router;
+//# sourceMappingURL=routes.js.map

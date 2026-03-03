@@ -70,3 +70,4 @@ async function crearDesdePlantillaMasivo(req, res) {
         return res.status(500).json({ error: "Error interno creando tareas masivas" });
     }
 }
+//# sourceMappingURL=tareas.masivo.controller.js.map

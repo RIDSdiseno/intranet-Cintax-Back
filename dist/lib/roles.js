@@ -30,3 +30,4 @@ function isSupervisorOrAdminForTrabajador(opts) {
     }
     return false;
 }
+//# sourceMappingURL=roles.js.map

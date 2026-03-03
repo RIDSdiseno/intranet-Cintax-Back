@@ -1,21 +1,31 @@
 {
-  "compilerOptions": {
-    "target": "ES2020",
-    "module": "commonjs",
-    "rootDir": "src",
-    "outDir": "./dist",
-    "strict": true,
-    "esModuleInterop": true,
-    "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true
-  },
-  "include": [
-    "src/**/*.ts"
-  ],
-  "exclude": [
-    "node_modules",
-    "dist",
-    "prisma",
-    "src/scripts/**"
-  ]
+"compilerOptions": {
+"target": "ES2022",
+"module": "commonjs",
+
+"lib": ["ES2022"],
+
+"rootDir": "src",
+"outDir": "./dist",
+
+"strict": true,
+"esModuleInterop": true,
+"skipLibCheck": true,
+"forceConsistentCasingInFileNames": true,
+
+"moduleResolution": "node",
+"resolveJsonModule": true,
+
+"sourceMap": true
+
+},
+"include": [
+"src/**/*.ts"
+],
+"exclude": [
+"node_modules",
+"dist",
+"prisma",
+"src/scripts/**"
+]
 }
