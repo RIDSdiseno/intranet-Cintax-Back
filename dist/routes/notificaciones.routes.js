@@ -16,3 +16,4 @@ router.patch("/:id/leida", notificaciones_controller_1.marcarComoLeida);
 // Marcar todas como leídas
 router.post("/marcar-todas-leidas", notificaciones_controller_1.marcarTodasComoLeidas);
 exports.default = router;
+//# sourceMappingURL=notificaciones.routes.js.map

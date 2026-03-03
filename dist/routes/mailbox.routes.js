@@ -15,3 +15,4 @@ router.get("/threads/:threadId", mailbox_controller_1.getMailboxThread);
 router.post("/threads/:threadId/reply", upload.array("attachments", 10), mailbox_controller_1.replyMailboxThread);
 router.post("/sync", mailbox_controller_1.syncMailboxInbox);
 exports.default = router;
+//# sourceMappingURL=mailbox.routes.js.map

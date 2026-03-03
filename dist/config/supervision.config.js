@@ -22,3 +22,4 @@ const isSupervisorEmail = (email) => exports.SUPERVISOR_EMAILS.map(normalize).in
 exports.isSupervisorEmail = isSupervisorEmail;
 const isSupervisorOrAdminEmail = (email) => (0, exports.isAdminEmail)(email) || (0, exports.isSupervisorEmail)(email);
 exports.isSupervisorOrAdminEmail = isSupervisorOrAdminEmail;
+//# sourceMappingURL=supervision.config.js.map

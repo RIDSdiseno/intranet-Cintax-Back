@@ -491,3 +491,4 @@ const setClienteActivo = async (req, res) => {
     }
 };
 exports.setClienteActivo = setClienteActivo;
+//# sourceMappingURL=cliente.controller.js.map

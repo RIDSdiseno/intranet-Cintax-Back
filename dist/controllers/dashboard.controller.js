@@ -138,3 +138,4 @@ const getAnnouncements = async (req, res) => {
     }
 };
 exports.getAnnouncements = getAnnouncements;
+//# sourceMappingURL=dashboard.controller.js.map

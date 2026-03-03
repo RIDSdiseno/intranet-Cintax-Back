@@ -10,3 +10,4 @@ exports.uploadExcel = (0, multer_1.default)({
     storage: multer_1.default.memoryStorage(),
     limits: { fileSize: 15 * 1024 * 1024 }, // 15MB
 });
+//# sourceMappingURL=uploadExcel.js.map

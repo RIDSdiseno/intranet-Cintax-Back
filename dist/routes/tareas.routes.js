@@ -112,3 +112,4 @@ router.get("/asignadas", requireAuth_1.requireAuth, tareas_Controller_1.getTarea
 // =====================
 router.post("/:id/enviar-correo", requireAuth_1.requireAuth, uploadCorreo.array("adjuntos"), correoTareas_controller_1.CorreoTareasController.enviarCorreo);
 exports.default = router;
+//# sourceMappingURL=tareas.routes.js.map

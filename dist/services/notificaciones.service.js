@@ -88,3 +88,4 @@ async function generarNotificacionesDeVencimiento() {
     }
     console.log('Finalizada la generación de notificaciones.');
 }
+//# sourceMappingURL=notificaciones.service.js.map

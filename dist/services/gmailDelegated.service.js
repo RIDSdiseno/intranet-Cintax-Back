@@ -241,3 +241,4 @@ async function getMessageAsUser(fromUserEmail, messageId) {
     });
     return res.data;
 }
+//# sourceMappingURL=gmailDelegated.service.js.map

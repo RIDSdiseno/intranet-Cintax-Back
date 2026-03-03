@@ -12,3 +12,4 @@ router.get("/my-kpis", dashboard_controller_1.getMyKpis);
 router.get("/activity", dashboard_controller_1.getRecentActivity);
 router.get("/announcements", dashboard_controller_1.getAnnouncements);
 exports.default = router;
+//# sourceMappingURL=dashboard.routes.js.map

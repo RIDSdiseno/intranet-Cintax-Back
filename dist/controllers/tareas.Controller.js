@@ -923,3 +923,4 @@ const getTareasPorRuts = async (req, res) => {
     }
 };
 exports.getTareasPorRuts = getTareasPorRuts;
+//# sourceMappingURL=tareas.Controller.js.map

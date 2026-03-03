@@ -21,12 +21,21 @@ model Trabajador {
   tipoRelacion       TipoRelacion?
   carpetaDriveCodigo String?          @db.VarChar(50)
 
+  // ✅ NUEVO (ADITIVO): supervisor (para permisos de lectura de bitácoras)
+  isSupervisor       Boolean          @default(false)
+
   refreshTokens      RefreshToken[]
   tareasAsignadas    TareaAsignada[]  @relation("TrabajadorTareas")
   tareasDefault      TareaPlantilla[] @relation("TareaResponsableDefault")
   tickets            Ticket[]
 
   ticketMessages     TicketMessage[]  @relation("TicketMessageAuthor")
+
+  // ✅ NUEVO (ADITIVO, seguro en producción)
+  ticketEvents       TicketEvent[]    @relation("TicketEventActor")
+
+  // ✅ NUEVO (ADITIVO): bitácoras diarias
+  bitacoras          BitacoraDiaria[]
 }
 
 model RefreshToken {
@@ -60,6 +69,9 @@ model Ticket {
   trabajador     Trabajador?     @relation(fields: [trabajadorId], references: [id_trabajador])
   messages       TicketMessage[]  @relation("TicketMessages")
 
+  // ✅ NUEVO (ADITIVO, seguro en producción)
+  events         TicketEvent[]
+
   @@index([createdAt])
   @@index([estado])
   @@index([categoria])
@@ -67,13 +79,13 @@ model Ticket {
 }
 
 model TicketMessage {
-  id                 Int                   @id @default(autoincrement())
+  id                 Int                    @id @default(autoincrement())
   ticketId           Int
   authorTrabajadorId Int?
   type               TicketMessageType
   direction          TicketMessageDirection @default(INBOUND)
 
-  gmailMessageId     String?               @unique
+  gmailMessageId     String?                @unique
 
   toEmail            String?
   cc                 String?
@@ -81,10 +93,10 @@ model TicketMessage {
   subject            String?
   bodyHtml           String
   bodyText           String?
-  createdAt          DateTime              @default(now())
+  createdAt          DateTime               @default(now())
 
-  ticket             Ticket                @relation("TicketMessages", fields: [ticketId], references: [id_ticket], onDelete: Cascade)
-  author             Trabajador?           @relation("TicketMessageAuthor", fields: [authorTrabajadorId], references: [id_trabajador], onDelete: SetNull)
+  ticket             Ticket                 @relation("TicketMessages", fields: [ticketId], references: [id_ticket], onDelete: Cascade)
+  author             Trabajador?            @relation("TicketMessageAuthor", fields: [authorTrabajadorId], references: [id_trabajador], onDelete: SetNull)
 
   attachments        TicketAttachment[]
 
@@ -104,6 +116,22 @@ model TicketAttachment {
   message   TicketMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
 
   @@index([messageId])
+}
+
+// ✅ NUEVO (ADITIVO, seguro en producción)
+model TicketEvent {
+  id                Int         @id @default(autoincrement())
+  ticketId          Int
+  type              String
+  meta              Json?
+  actorTrabajadorId Int?
+  createdAt         DateTime    @default(now())
+
+  ticket            Ticket      @relation(fields: [ticketId], references: [id_ticket], onDelete: Cascade)
+  actor             Trabajador? @relation("TicketEventActor", fields: [actorTrabajadorId], references: [id_trabajador], onDelete: SetNull)
+
+  @@index([ticketId, createdAt])
+  @@index([actorTrabajadorId])
 }
 
 model TareaPlantilla {
@@ -204,6 +232,27 @@ model ClienteTareaExclusion {
   @@unique([rutCliente, tareaPlantillaId])
   @@index([rutCliente])
   @@index([tareaPlantillaId])
+}
+
+// ✅ NUEVO (ADITIVO): Bitácoras diarias
+model BitacoraDiaria {
+  id           Int        @id @default(autoincrement())
+  trabajadorId Int
+
+  // “día” de la bitácora (recomendado normalizar a 00:00 al guardar)
+  fecha        DateTime
+
+  titulo       String?
+  contenido    String
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  trabajador   Trabajador @relation(fields: [trabajadorId], references: [id_trabajador], onDelete: Cascade)
+
+  // ✅ una bitácora por día por trabajador (si guardas fecha normalizada)
+  @@unique([trabajadorId, fecha])
+  @@index([fecha])
+  @@index([trabajadorId, fecha])
 }
 
 enum TipoRelacion {

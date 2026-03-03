@@ -6,6 +6,7 @@ import googleRoutes from "./routes/google.route";
 import clienteRoutes from "./routes/cliente.routes";
 import ticketsRoutes from "./routes/tickets.routes";
 import mailboxRoutes from "./routes/mailbox.routes";
+import bitacoraRoutes from "./routes/bitacora.routes";
 
 const router = Router();
 
@@ -40,5 +41,10 @@ router.use("/tickets", ticketsRoutes);
 //  MAILBOX (lectura Gmail)
 // =============================
 router.use("/mailbox", mailboxRoutes);
+
+//=============================
+//  BITACORA
+// =============================
+router.use("/bitacoras", bitacoraRoutes);
 
 export default router;

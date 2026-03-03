@@ -106,3 +106,4 @@ async function canSeeTicket(prisma, user, ticket) {
         return false;
     return ticketArea.slug === ctx.userAreaSlug;
 }
+//# sourceMappingURL=ticketAccess.js.map

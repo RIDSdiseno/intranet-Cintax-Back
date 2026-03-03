@@ -315,3 +315,4 @@ if (ENABLE_GROUPS_CRON) {
 }
 // ⚠️ Error handler SIEMPRE al final
 exports.app.use(error_middleware_js_1.errorHandler);
+//# sourceMappingURL=app.js.map

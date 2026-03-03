@@ -1406,3 +1406,4 @@ const listTareasAsignadas = async (req, res) => {
     }
 };
 exports.listTareasAsignadas = listTareasAsignadas;
+//# sourceMappingURL=auth.controller.js.map

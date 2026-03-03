@@ -20,3 +20,4 @@ function startSchedulers() {
     });
     console.log("[SCHED] Schedulers iniciados.");
 }
+//# sourceMappingURL=scheduler.js.map
