@@ -139,9 +139,12 @@ model TareaPlantilla {
   area                 Area
   nombre               String
 
-  // ✅ NUEVO: clave normalizada para evitar duplicados por MAY/MIN/espacios
-  // Ej: "Declaración IVA" -> "declaración iva"
+  // sigue siendo único
   nombreNorm           String          @unique
+
+  // NUEVO: “clave base” para buscar por nombre lógico cuando la plantilla es volátil
+  // Ej base: "declaracion iva"
+  nombreBaseNorm       String?         @db.VarChar(255)
 
   detalle              String
   frecuenciaTexto      String?
@@ -155,11 +158,20 @@ model TareaPlantilla {
   codigoDocumento      String?
   requiereDrive        Boolean         @default(true)
 
+  // NUEVO: volatilidad
+  isVolatile           Boolean         @default(false)
+  expiresAt            DateTime?
+  createdAt            DateTime        @default(now())
+
   tareasAsignadas      TareaAsignada[]
   responsableDefault   Trabajador?     @relation("TareaResponsableDefault", fields: [responsableDefaultId], references: [id_trabajador])
 
   @@index([area])
   @@index([responsableDefaultId])
+
+  // para resolver volátiles rápido
+  @@index([nombreBaseNorm])
+  @@index([isVolatile, expiresAt])
 }
 
 model TareaAsignada {

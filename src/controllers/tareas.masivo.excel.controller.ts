@@ -4,18 +4,61 @@ import { prisma } from "../lib/prisma";
 import { EstadoTarea, Area, FrecuenciaTarea, Presentacion } from "@prisma/client";
 import * as XLSX from "xlsx";
 
-/**
- * Normaliza RUT:
- * - quita puntos
- * - mantiene guion si existe
- * - upper para K
- * Ej: "76.001.158-4" => "76001158-4"
- */
+function cleanRut(input: unknown): string | null {
+  if (input === null || input === undefined) return null;
+  const s = String(input).trim();
+  if (!s) return null;
+
+  const cleaned = s
+    .toUpperCase()
+    .replace(/\s+/g, "")
+    .replace(/\./g, "")
+    .replace(/[^0-9K-]/g, "");
+
+  if (!cleaned) return null;
+
+  if (!cleaned.includes("-")) {
+    if (cleaned.length < 2) return null;
+    return `${cleaned.slice(0, -1)}-${cleaned.slice(-1)}`;
+  }
+
+  const [body, dv, ...rest] = cleaned.split("-");
+  if (!body || !dv || rest.length) return null;
+  return `${body}-${dv}`;
+}
+
+function computeRutDV(body: string): string {
+  let sum = 0;
+  let mul = 2;
+  for (let i = body.length - 1; i >= 0; i--) {
+    sum += Number(body[i]) * mul;
+    mul = mul === 7 ? 2 : mul + 1;
+  }
+  const mod = 11 - (sum % 11);
+  if (mod === 11) return "0";
+  if (mod === 10) return "K";
+  return String(mod);
+}
+
+function isValidRut(cleanedRut: string): boolean {
+  const [body, dv] = cleanedRut.split("-");
+  if (!body || !dv) return false;
+  if (!/^\d+$/.test(body)) return false;
+  if (!/^[0-9K]$/.test(dv)) return false;
+  return computeRutDV(body) === dv;
+}
+
+function formatRutDb(cleanedRut: string): string {
+  const [body, dv] = cleanedRut.split("-");
+  const withDots = body.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  return `${withDots}-${dv}`;
+}
+
 function normRut(v: any) {
-  const raw = String(v ?? "").trim();
-  if (!raw) return "";
-  const noDots = raw.replace(/\./g, "").replace(/\s+/g, "");
-  return noDots.toUpperCase();
+  const cleaned = cleanRut(v);
+  if (!cleaned) return "";
+  if (!isValidRut(cleaned)) return "";
+  return formatRutDb(cleaned); // "76.001.158-4"
 }
 
 /**
@@ -28,9 +71,7 @@ function normRut(v: any) {
 function normNombre(v: any) {
   const raw = String(v ?? "").trim().replace(/\s+/g, " ").toLowerCase();
   if (!raw) return "";
-  return raw
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, ""); // quita diacríticos
+  return raw.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 }
 
 function normEmail(v: any) {
@@ -108,12 +149,10 @@ function parseFrecuencia(v: any): FrecuenciaTarea | null {
   const raw = String(v ?? "").trim().toUpperCase();
   if (!raw) return null;
 
-  // Ajusta aquí si tu enum tiene otros valores.
-  // Ej esperados: UNICA, MENSUAL, SEMANAL, ANUAL, etc.
   const allowed = new Set(Object.values(FrecuenciaTarea) as string[]);
   if (allowed.has(raw)) return raw as FrecuenciaTarea;
 
-  // alias comunes
+  // alias comunes (solo si existen en enum)
   const alias: Record<string, string> = {
     UNICA: "UNICA",
     ÚNICA: "UNICA",
@@ -123,8 +162,6 @@ function parseFrecuencia(v: any): FrecuenciaTarea | null {
     MENSUALMENTE: "MENSUAL",
     SEMANAL: "SEMANAL",
     SEMANALMENTE: "SEMANAL",
-    ANUAL: "ANUAL",
-    ANUALMENTE: "ANUAL",
   };
 
   const mapped = alias[raw];
@@ -167,12 +204,9 @@ type RowResult =
   | { row: number; rut: string; error: string };
 
 type PlantillaConfig = {
-  // “Reglas” para la plantilla (cuando es NUEVA)
   frecuencia: FrecuenciaTarea;
   diaMesVencimiento: number | null;
   diaSemanaVencimiento: number | null;
-
-  // Extras
   detalle: string;
   area: Area;
   presentacion: Presentacion;
@@ -187,6 +221,23 @@ function isValidDiaMes(n: number | null) {
 function isValidDiaSemana(n: number | null) {
   // Convención típica 1..7 (Lunes..Domingo). Ajusta si usas otra.
   return n != null && Number.isInteger(n) && n >= 1 && n <= 7;
+}
+
+// ======== VOLÁTILES (31 días) ========
+const VOLATILE_DAYS = 31;
+
+function addDays(d: Date, days: number) {
+  return new Date(d.getTime() + days * 24 * 60 * 60 * 1000);
+}
+
+function makeVolatileNombreNorm(baseNorm: string, expiresAt: Date, seed: string) {
+  // mantiene base para debug + asegura uniqueness
+  const y = expiresAt.getFullYear();
+  const m = String(expiresAt.getMonth() + 1).padStart(2, "0");
+  const day = String(expiresAt.getDate()).padStart(2, "0");
+  const rnd = Math.random().toString(16).slice(2, 8);
+  const safeSeed = (seed || "").replace(/[^a-z0-9]/gi, "").slice(0, 10);
+  return `${baseNorm}__v__${y}${m}${day}__${safeSeed || "x"}__${rnd}`;
 }
 
 export async function cargarTareasDesdeExcel(req: Request, res: Response) {
@@ -240,11 +291,14 @@ export async function cargarTareasDesdeExcel(req: Request, res: Response) {
       return "";
     };
 
+    const now = new Date();
+    const volatileExpiresAt = addDays(now, VOLATILE_DAYS);
+
     // =====================
     // Pre-parse filas Excel
     // =====================
     const parsed = rows.map((r, idx) => {
-      const rut = normRut(get(r, "rut", "RUT"));
+      const rut = normRut(get(r, "rut", "RUT", "rutCliente", "rut_cliente", "RUT CLIENTE", "rut cliente", "R.U.T"));
       const razonSocial = String(get(r, "razonSocial", "razon social", "empresa", "razon")).trim();
 
       // Email en fila (o query)
@@ -254,14 +308,19 @@ export async function cargarTareasDesdeExcel(req: Request, res: Response) {
       const agenteEmail = agenteEmailRow || queryAgenteEmail || "";
 
       // Compatibilidad: id en fila (o query)
-      const agenteIdCell = Number(get(r, "agenteId", "trabajadorId", "responsableId", "agente"));
+      const agenteIdCellRaw = get(r, "agenteId", "trabajadorId", "responsableId", "agente");
+      const agenteIdCell = parseIntOrNull(agenteIdCellRaw);
       const agenteId =
-        Number.isFinite(agenteIdCell) && agenteIdCell > 0 ? agenteIdCell : (queryAgenteId ?? null);
+        agenteIdCell != null && agenteIdCell > 0 ? agenteIdCell : (queryAgenteId ?? null);
 
       const plantillaIds = parsePlantillaIds(get(r, "plantillaIds", "plantillas", "plantillaId"));
       const plantillaNombres = parsePlantillaNombres(
         get(r, "tarea", "tareas", "plantillaNombre", "plantilla", "nombreTarea")
       );
+
+      // ✅ VOLÁTIL por fila (aplica a todas las tareas por nombre de la fila)
+      const isVolatileRow =
+        parseBool(get(r, "volatile", "volatil", "esVolatil", "tareaVolatil", "volatile31")) ?? false;
 
       /**
        * Fecha opcional por fila:
@@ -272,7 +331,6 @@ export async function cargarTareasDesdeExcel(req: Request, res: Response) {
         parseFecha(get(r, "vencimiento", "fechaProgramada", "fecha")) ?? defaultFecha;
 
       /**
-       * ✅ NUEVO (MISMA HOJA):
        * Config para PLANTILLA cuando es NUEVA.
        * Si la plantilla ya existe, se IGNORA esta config.
        */
@@ -299,16 +357,16 @@ export async function cargarTareasDesdeExcel(req: Request, res: Response) {
         String(get(r, "codigoDocumento", "codigo", "codigo_documento")).trim() || "";
 
       return {
-        row: idx + 2, // 1 = headers, por eso +2
+        row: idx + 2,
         rut,
         razonSocial,
         agenteEmail,
         agenteId,
         plantillaIds,
         plantillaNombres,
-        fechaProgramada, // Date | null
+        fechaProgramada,
+        isVolatileRow,
 
-        // config “inline” por fila (si hay tarea nueva)
         plantillaConfigInline: {
           frecuenciaPlantilla,
           diaMesVencimiento,
@@ -323,10 +381,7 @@ export async function cargarTareasDesdeExcel(req: Request, res: Response) {
     });
 
     // =====================
-    // Validaciones base:
-    // - rut
-    // - fechaProgramada (en fila o fallback query)
-    // - al menos plantillaIds o plantillaNombres
+    // Validaciones base
     // =====================
     const bad = parsed.filter(
       (p) =>
@@ -350,7 +405,7 @@ export async function cargarTareasDesdeExcel(req: Request, res: Response) {
     }
 
     // =====================
-    // 0) Resolver trabajadores por EMAIL (si se usó)
+    // 0) Resolver trabajadores por EMAIL
     // =====================
     const allEmails = Array.from(new Set(parsed.map((p) => p.agenteEmail).filter(Boolean)));
 
@@ -366,7 +421,6 @@ export async function cargarTareasDesdeExcel(req: Request, res: Response) {
       trabajadoresByEmail.map((t) => [String(t.email).toLowerCase(), t.id_trabajador])
     );
 
-    // Si viene queryAgenteEmail y NO existe, fallamos temprano (mejor UX)
     if (queryAgenteEmail && !trabajadorEmailMap.has(queryAgenteEmail)) {
       return res.status(400).json({ error: `agenteEmail no existe: ${queryAgenteEmail}` });
     }
@@ -395,7 +449,6 @@ export async function cargarTareasDesdeExcel(req: Request, res: Response) {
 
       const razon = p.razonSocial || `Cliente ${p.rut}`;
 
-      // asignación default para cliente nuevo:
       const agenteIdFromEmail = p.agenteEmail
         ? (trabajadorEmailMap.get(p.agenteEmail) ?? null)
         : null;
@@ -413,10 +466,9 @@ export async function cargarTareasDesdeExcel(req: Request, res: Response) {
     if (clientesToCreate.length) {
       await prisma.cliente.createMany({
         data: clientesToCreate,
-        skipDuplicates: true, // rut unique
+        skipDuplicates: true,
       });
 
-      // re-cargar para map actualizado
       const clientes2 = await prisma.cliente.findMany({
         where: { rut: { in: ruts } },
         select: { rut: true, agenteId: true, activo: true, razonSocial: true },
@@ -441,7 +493,13 @@ export async function cargarTareasDesdeExcel(req: Request, res: Response) {
     const plantillaIdSet = new Set(plantillasById.map((p) => p.id_tarea_plantilla));
 
     // =====================
-    // 3) Plantillas por nombre: resolver o crear por nombreNorm
+    // 3) Plantillas por nombre: resolver o crear
+    //    ✅ Soporta VOLÁTILES (31 días)
+    //    Requiere en schema TareaPlantilla:
+    //    - isVolatile Boolean @default(false)
+    //    - expiresAt DateTime?
+    //    - nombreBaseNorm String?
+    //    - createdAt DateTime @default(now())
     // =====================
     const allNombreNorms = Array.from(
       new Set(
@@ -452,28 +510,68 @@ export async function cargarTareasDesdeExcel(req: Request, res: Response) {
       )
     );
 
-    const plantillasFoundByName =
+    // Resolver volatilidad por tarea (si alguna fila la marca volatile, gana true)
+    const volatileByNombreNorm = new Map<string, boolean>();
+    for (const p of parsed) {
+      if (!p.isVolatileRow) continue;
+      for (const nombre of p.plantillaNombres) {
+        const nn = normNombre(nombre);
+        if (!nn) continue;
+        volatileByNombreNorm.set(nn, true);
+      }
+    }
+
+    const plantillasFound =
       allNombreNorms.length === 0
         ? []
         : await prisma.tareaPlantilla.findMany({
-            where: { nombreNorm: { in: allNombreNorms } },
+            where: {
+              OR: [
+                { nombreNorm: { in: allNombreNorms } }, // normales
+                {
+                  // volátiles vigentes por base
+                  nombreBaseNorm: { in: allNombreNorms },
+                  isVolatile: true,
+                  activo: true,
+                  expiresAt: { gt: now },
+                },
+              ],
+            },
             select: {
               id_tarea_plantilla: true,
               nombreNorm: true,
+              nombreBaseNorm: true,
+              isVolatile: true,
+              expiresAt: true,
+              createdAt: true,
               activo: true,
               frecuencia: true,
               diaMesVencimiento: true,
               diaSemanaVencimiento: true,
             },
+            orderBy: [{ createdAt: "desc" }], // para que “gane” la volátil más nueva
           });
 
-    const plantillaNameMap = new Map(plantillasFoundByName.map((p) => [p.nombreNorm, p]));
+    // Mapas separados (para decidir según si la fila pide volatile o no)
+    const normalNameMap = new Map<string, any>(); // key: nombreNorm
+    const volatileNameMap = new Map<string, any>(); // key: nombreBaseNorm (base)
+
+    for (const pl of plantillasFound) {
+      if (!pl.activo) continue;
+
+      if (pl.isVolatile) {
+        if (!pl.nombreBaseNorm) continue;
+        // por orderBy desc: la primera que entra es la más nueva
+        if (!volatileNameMap.has(pl.nombreBaseNorm)) volatileNameMap.set(pl.nombreBaseNorm, pl);
+      } else {
+        normalNameMap.set(pl.nombreNorm, pl);
+      }
+    }
 
     /**
      * ✅ NUEVO:
-     * Unificamos configuración "inline" (misma hoja) por nombreNorm.
-     * Si una tarea NUEVA aparece en múltiples filas, tomamos la primera config completa.
-     * Si hay conflictos evidentes, hacemos fallar con 400 (mejor que crear mal).
+     * Unificamos configuración "inline" por nombreNorm.
+     * Si hay conflictos, 400.
      */
     const inlineConfigMap = new Map<string, { config: PlantillaConfig; fromRow: number }>();
     const inlineConfigConflicts: Array<{ nombreNorm: string; rows: number[]; reason: string }> = [];
@@ -484,7 +582,6 @@ export async function cargarTareasDesdeExcel(req: Request, res: Response) {
         const nn = normNombre(nombre);
         if (!nn) continue;
 
-        // si no viene ninguna columna de config en esta fila, no aporta
         const hasAnyCfg =
           !!cfgInline.frecuenciaPlantilla ||
           cfgInline.diaMesVencimiento != null ||
@@ -492,11 +589,7 @@ export async function cargarTareasDesdeExcel(req: Request, res: Response) {
 
         if (!hasAnyCfg) continue;
 
-        // construir config candidata (solo si frecuencia es válida)
-        if (!cfgInline.frecuenciaPlantilla) {
-          // frecuencia inválida o vacía: no la usamos como config “completa”
-          continue;
-        }
+        if (!cfgInline.frecuenciaPlantilla) continue;
 
         const candidate: PlantillaConfig = {
           frecuencia: cfgInline.frecuenciaPlantilla,
@@ -513,7 +606,6 @@ export async function cargarTareasDesdeExcel(req: Request, res: Response) {
         if (!prev) {
           inlineConfigMap.set(nn, { config: candidate, fromRow: p.row });
         } else {
-          // detectar conflicto: misma tarea con frecuencia distinta / días distintos
           const a = prev.config;
           const b = candidate;
 
@@ -541,32 +633,47 @@ export async function cargarTareasDesdeExcel(req: Request, res: Response) {
     }
 
     /**
-     * ✅ NUEVO:
-     * Para toda plantilla que NO exista en BD, exigimos config en la MISMA hoja.
-     * Ej: frecuencia=MENSUAL y diaMesVencimiento=15
+     * ✅ Reglas para nuevas plantillas (normales o volátiles):
+     * si NO existe (ni normal, ni volátil vigente cuando la fila pide volátil),
+     * exigimos config en la misma hoja.
      */
     const missingConfig: Array<{ tarea: string; nombreNorm: string; sampleRows: number[] }> = [];
+
     for (const nn of allNombreNorms) {
-      if (plantillaNameMap.has(nn)) continue; // ya existe => se ignora config excel
+      const wantsVolatile = volatileByNombreNorm.get(nn) === true;
+
+      // existe normal?
+      const existsNormal = normalNameMap.has(nn);
+
+      // existe volátil vigente?
+      const existsVolatile = volatileNameMap.has(nn);
+
+      // decisión de existencia según lo que pide excel:
+      // - si quiere volátil: sirve volátil vigente, si no hay, sirve normal (fallback)
+      // - si NO quiere volátil: solo sirve normal
+      const existsForThisRequest = wantsVolatile ? (existsVolatile || existsNormal) : existsNormal;
+
+      if (existsForThisRequest) continue;
+
       const cfg = inlineConfigMap.get(nn)?.config;
 
       if (!cfg) {
-        // buscar filas donde aparece para ayudar al usuario
         const rowsWhere = parsed
           .filter((p) => p.plantillaNombres.some((t) => normNombre(t) === nn))
           .slice(0, 5)
           .map((p) => p.row);
 
         missingConfig.push({
-          tarea: parsed.find((p) => p.plantillaNombres.some((t) => normNombre(t) === nn))
-            ?.plantillaNombres.find((t) => normNombre(t) === nn) ?? nn,
+          tarea:
+            parsed
+              .find((p) => p.plantillaNombres.some((t) => normNombre(t) === nn))
+              ?.plantillaNombres.find((t) => normNombre(t) === nn) ?? nn,
           nombreNorm: nn,
           sampleRows: rowsWhere,
         });
         continue;
       }
 
-      // validar coherencia según frecuencia
       if (cfg.frecuencia === FrecuenciaTarea.MENSUAL) {
         if (!isValidDiaMes(cfg.diaMesVencimiento)) {
           missingConfig.push({
@@ -606,6 +713,7 @@ export async function cargarTareasDesdeExcel(req: Request, res: Response) {
       });
     }
 
+    // Crear plantillas que falten (normales o volátiles)
     const plantillasToCreate: Array<{
       area: Area;
       nombre: string;
@@ -618,65 +726,136 @@ export async function cargarTareasDesdeExcel(req: Request, res: Response) {
       activo: boolean;
       requiereDrive: boolean;
       codigoDocumento?: string | null;
+
+      // ✅ Volátiles (requiere schema)
+      isVolatile?: boolean;
+      expiresAt?: Date | null;
+      nombreBaseNorm?: string | null;
     }> = [];
+
+    // Set para evitar duplicar dentro del mismo batch
+    const plannedNormal = new Set<string>(); // nn
+    const plannedVolatile = new Set<string>(); // nn (base)
 
     for (const p of parsed) {
       for (const nombre of p.plantillaNombres) {
         const nn = normNombre(nombre);
         if (!nn) continue;
 
-        // ya existe en BD o ya lo reservamos
-        if (plantillaNameMap.has(nn)) continue;
+        const wantsVolatile = volatileByNombreNorm.get(nn) === true;
 
-        // debe existir config (ya validamos arriba)
+        // ¿ya existe según el tipo pedido?
+        const existsNormal = normalNameMap.has(nn);
+        const existsVolatile = volatileNameMap.has(nn);
+
+        const existsForThisRequest = wantsVolatile ? (existsVolatile || existsNormal) : existsNormal;
+        if (existsForThisRequest) continue;
+
+        // ya planificada en este batch
+        if (wantsVolatile) {
+          if (plannedVolatile.has(nn)) continue;
+        } else {
+          if (plannedNormal.has(nn)) continue;
+        }
+
         const cfg = inlineConfigMap.get(nn)!.config;
 
-        plantillasToCreate.push({
-          area: cfg.area ?? Area.ADMIN,
-          nombre,
-          nombreNorm: nn,
-          detalle: cfg.detalle || "Creada desde carga masiva (Excel)",
-          frecuencia: cfg.frecuencia,
-          diaMesVencimiento: cfg.diaMesVencimiento ?? null,
-          diaSemanaVencimiento: cfg.diaSemanaVencimiento ?? null,
-          presentacion: cfg.presentacion ?? Presentacion.CLIENTE,
-          activo: true,
-          requiereDrive: cfg.requiereDrive ?? true,
-          codigoDocumento: cfg.codigoDocumento ?? null,
-        });
+        if (wantsVolatile) {
+          // Crear volátil (31 días), nombreNorm único, base en nombreBaseNorm
+          const uniqueNombreNorm = makeVolatileNombreNorm(nn, volatileExpiresAt, `${p.row}_${p.rut}`);
 
-        // reserva para evitar duplicar en el batch
-        plantillaNameMap.set(nn, {
-          id_tarea_plantilla: -1,
-          nombreNorm: nn,
-          activo: true,
-          frecuencia: cfg.frecuencia,
-          diaMesVencimiento: cfg.diaMesVencimiento ?? null,
-          diaSemanaVencimiento: cfg.diaSemanaVencimiento ?? null,
-        } as any);
+          plantillasToCreate.push({
+            area: cfg.area ?? Area.ADMIN,
+            nombre,
+            nombreNorm: uniqueNombreNorm,
+            nombreBaseNorm: nn,
+            detalle: cfg.detalle || "Creada desde carga masiva (Excel)",
+            frecuencia: cfg.frecuencia,
+            diaMesVencimiento: cfg.diaMesVencimiento ?? null,
+            diaSemanaVencimiento: cfg.diaSemanaVencimiento ?? null,
+            presentacion: cfg.presentacion ?? Presentacion.CLIENTE,
+            activo: true,
+            requiereDrive: cfg.requiereDrive ?? true,
+            codigoDocumento: cfg.codigoDocumento ?? null,
+
+            isVolatile: true,
+            expiresAt: volatileExpiresAt,
+          });
+
+          plannedVolatile.add(nn);
+        } else {
+          // Crear normal (nombreNorm = nn único)
+          plantillasToCreate.push({
+            area: cfg.area ?? Area.ADMIN,
+            nombre,
+            nombreNorm: nn,
+            nombreBaseNorm: null,
+            detalle: cfg.detalle || "Creada desde carga masiva (Excel)",
+            frecuencia: cfg.frecuencia,
+            diaMesVencimiento: cfg.diaMesVencimiento ?? null,
+            diaSemanaVencimiento: cfg.diaSemanaVencimiento ?? null,
+            presentacion: cfg.presentacion ?? Presentacion.CLIENTE,
+            activo: true,
+            requiereDrive: cfg.requiereDrive ?? true,
+            codigoDocumento: cfg.codigoDocumento ?? null,
+
+            isVolatile: false,
+            expiresAt: null,
+          });
+
+          plannedNormal.add(nn);
+        }
       }
     }
 
     if (plantillasToCreate.length) {
       await prisma.tareaPlantilla.createMany({
-        data: plantillasToCreate,
-        skipDuplicates: true, // nombreNorm unique
+        data: plantillasToCreate as any,
+        skipDuplicates: true, // respeta unique nombreNorm
       });
 
-      // re-cargar para map final
-      const plantillas3 = await prisma.tareaPlantilla.findMany({
-        where: { nombreNorm: { in: allNombreNorms } },
-        select: {
-          id_tarea_plantilla: true,
-          nombreNorm: true,
-          activo: true,
-          frecuencia: true,
-          diaMesVencimiento: true,
-          diaSemanaVencimiento: true,
-        },
-      });
-      plantillaNameMap.clear();
-      for (const pl of plantillas3) plantillaNameMap.set(pl.nombreNorm, pl);
+      // re-cargar para mapas finales
+      const plantillasReload =
+        allNombreNorms.length === 0
+          ? []
+          : await prisma.tareaPlantilla.findMany({
+              where: {
+                OR: [
+                  { nombreNorm: { in: allNombreNorms } },
+                  {
+                    nombreBaseNorm: { in: allNombreNorms },
+                    isVolatile: true,
+                    activo: true,
+                    expiresAt: { gt: now },
+                  },
+                ],
+              },
+              select: {
+                id_tarea_plantilla: true,
+                nombreNorm: true,
+                nombreBaseNorm: true,
+                isVolatile: true,
+                expiresAt: true,
+                createdAt: true,
+                activo: true,
+                frecuencia: true,
+                diaMesVencimiento: true,
+                diaSemanaVencimiento: true,
+              },
+              orderBy: [{ createdAt: "desc" }],
+            });
+
+      normalNameMap.clear();
+      volatileNameMap.clear();
+      for (const pl of plantillasReload) {
+        if (!pl.activo) continue;
+        if (pl.isVolatile) {
+          if (!pl.nombreBaseNorm) continue;
+          if (!volatileNameMap.has(pl.nombreBaseNorm)) volatileNameMap.set(pl.nombreBaseNorm, pl);
+        } else {
+          normalNameMap.set(pl.nombreNorm, pl);
+        }
+      }
     }
 
     // =====================
@@ -691,7 +870,6 @@ export async function cargarTareasDesdeExcel(req: Request, res: Response) {
       fechaProgramada: Date;
     }> = [];
 
-    // Opcional: preparar updates de cliente (si forceUpdateClienteAgente=true)
     const clienteUpdates: Array<{ rut: string; agenteId: number | null }> = [];
 
     for (const p of parsed) {
@@ -714,11 +892,6 @@ export async function cargarTareasDesdeExcel(req: Request, res: Response) {
         ? (trabajadorEmailMap.get(p.agenteEmail) ?? null)
         : null;
 
-      // Prioridad:
-      // 1) email (fila/query)
-      // 2) agenteId (fila/query)
-      // 3) cliente.agenteId
-      // 4) null
       const trabajadorId = agenteIdFromEmail ?? p.agenteId ?? c.agenteId ?? null;
 
       const assignedTo: AssignedTo = agenteIdFromEmail
@@ -735,7 +908,6 @@ export async function cargarTareasDesdeExcel(req: Request, res: Response) {
         );
       }
 
-      // Opcional: actualizar cliente existente si fuerza y viene asignación por email/id
       if (forceUpdateClienteAgente && clienteStatus === "existing") {
         const desired = agenteIdFromEmail ?? p.agenteId ?? null;
         if (desired && c.agenteId !== desired) {
@@ -747,15 +919,25 @@ export async function cargarTareasDesdeExcel(req: Request, res: Response) {
       const invalidIds = p.plantillaIds.filter((id) => !plantillaIdSet.has(id));
       if (invalidIds.length) errors.push(`Plantillas inválidas por ID: ${invalidIds.join(",")}`);
 
-      // Plantillas por Nombre (resueltas)
+      // Plantillas por Nombre (resueltas) con regla volátil:
+      // - Si fila marca volatile => preferir volátil vigente; fallback a normal
+      // - Si NO marca volatile => solo normal
       const resolvedByNameIds: number[] = [];
       for (const nombre of p.plantillaNombres) {
         const nn = normNombre(nombre);
-        const pl = plantillaNameMap.get(nn);
+        const wantsVolatile = p.isVolatileRow || volatileByNombreNorm.get(nn) === true;
+
+        const pl = wantsVolatile ? (volatileNameMap.get(nn) ?? normalNameMap.get(nn)) : normalNameMap.get(nn);
+
         if (!pl) {
-          errors.push(`No se pudo resolver/crear plantilla para: "${nombre}"`);
+          errors.push(
+            wantsVolatile
+              ? `No se pudo resolver/crear plantilla VOLÁTIL (o normal fallback) para: "${nombre}"`
+              : `No se pudo resolver/crear plantilla para: "${nombre}"`
+          );
           continue;
         }
+
         resolvedByNameIds.push(pl.id_tarea_plantilla);
       }
 
@@ -772,7 +954,6 @@ export async function cargarTareasDesdeExcel(req: Request, res: Response) {
         continue;
       }
 
-      // Fecha programada (ya validada arriba)
       const fecha = p.fechaProgramada!;
       if (!fecha || Number.isNaN(fecha.getTime())) {
         results.push({
@@ -783,7 +964,6 @@ export async function cargarTareasDesdeExcel(req: Request, res: Response) {
         continue;
       }
 
-      // Crear N tareas por fila
       for (const pid of resolvedIds) {
         createData.push({
           tareaPlantillaId: pid,
@@ -802,7 +982,7 @@ export async function cargarTareasDesdeExcel(req: Request, res: Response) {
           by: p.plantillaIds.length ? "id" : "nombre",
           requested: p.plantillaIds.length + p.plantillaNombres.length,
           resolved: resolvedIds.length,
-          created: 0, // si quieres distinguir "existente vs creada", se puede calcular
+          created: 0,
         },
         tareasRequested: resolvedIds.length,
         tareasCreatedApprox: resolvedIds.length,
@@ -823,7 +1003,6 @@ export async function cargarTareasDesdeExcel(req: Request, res: Response) {
     // 4.5) (opcional) Actualizar agenteId del cliente existente si se pidió
     // =====================
     if (forceUpdateClienteAgente && clienteUpdates.length) {
-      // dedupe por rut (último gana)
       const lastByRut = new Map<string, number | null>();
       for (const u of clienteUpdates) lastByRut.set(u.rut, u.agenteId);
 
@@ -857,7 +1036,8 @@ export async function cargarTareasDesdeExcel(req: Request, res: Response) {
         : null,
       rules:
         "Si una tarea (plantilla) NO existe, debes incluir en la MISMA hoja su configuración: frecuencia + día (mensual/semanal). " +
-        "Si la tarea ya existe en el sistema, se ignora la config del Excel y NO se actualiza.",
+        "Si la tarea ya existe en el sistema, se ignora la config del Excel y NO se actualiza. " +
+        `Si marca volatile=true en la fila, la plantilla se crea como VOLÁTIL y expira en ${VOLATILE_DAYS} días (requiere campos isVolatile/expiresAt/nombreBaseNorm/createdAt en TareaPlantilla).`,
     });
   } catch (e) {
     console.error("[cargarTareasDesdeExcel] error:", e);

@@ -16,8 +16,20 @@ import {
   excluirTareaParaCliente,
   reactivarTareaParaCliente,
 } from "../controllers/clienteTareaExclusion.controller";
+import { cargarClientesDesdeExcel } from "../controllers/clientes.masivo.excel.controller";
+import multer from "multer";
 
 const router = Router();
+const upload = multer({ storage: multer.memoryStorage() });
+
+// ✅ Carga masiva Excel
+// POST /api/clientes/masivo-excel  (form-data: archivo)
+router.post(
+  "/masivo-excel",
+  requireAuth,
+  upload.single("archivo"),
+  cargarClientesDesdeExcel
+);
 
 // ✅ Listar (con filtros) + Crear
 router.get("/", requireAuth, listClientes); // GET /api/clientes

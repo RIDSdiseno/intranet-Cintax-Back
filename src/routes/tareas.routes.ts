@@ -23,7 +23,14 @@ import {
   getTareasPorRuts, // POST /por-ruts
 } from "../controllers/tareas.Controller";
 
-// ✅ NUEVO: carga masiva desde Excel (crea cliente/plantilla si no existe)
+// ✅ Masivo manual (controller aparte, con debug en 400)
+import {
+  crearDesdePlantillaMasivo,
+  crearDesdePlantillaMasivoSafe,
+  reasignarClienteYTransferirTareas, // ✅ NUEVO
+} from "../controllers/tareas.masivo.controller";
+
+// ✅ Carga masiva desde Excel (crea cliente/plantilla si no existe)
 import { cargarTareasDesdeExcel } from "../controllers/tareas.masivo.excel.controller";
 
 // ✅ Controlador de métricas
@@ -49,8 +56,7 @@ const uploadExcel = multer({
   limits: { fileSize: 15 * 1024 * 1024 }, // 15MB
   fileFilter: (_req, file, cb) => {
     const ok =
-      file.mimetype ===
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" || // .xlsx
+      file.mimetype === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" || // .xlsx
       file.mimetype === "application/vnd.ms-excel"; // .xls (por si acaso)
     if (!ok) return cb(new Error("Archivo inválido. Debe ser .xlsx (o .xls)."));
     cb(null, true);
@@ -87,10 +93,24 @@ router.get("/por-plantilla/:idPlantilla", requireAuth, getTareasPorPlantilla);
 router.delete("/plantillas/:id", requireAuth, eliminarPlantillaConTareas);
 
 // =====================
-// Asignación masiva desde plantilla (manual, 1 trabajador para todos)
+// Asignación masiva desde plantilla
 // =====================
 
+// ✅ Ruta existente (la que ya usa tu front hoy)
 router.post("/crear-desde-plantilla", requireAuth, crearTareasDesdePlantilla);
+
+// ✅ NUEVO: masivo "directo" (tu controller createMany)
+router.post("/masivo/crear-desde-plantilla", requireAuth, crearDesdePlantillaMasivo);
+
+// ✅ NUEVO: versión "SAFE" (reprograma si existe + debug en 400)
+router.post("/masivo/crear-desde-plantilla-safe", requireAuth, crearDesdePlantillaMasivoSafe);
+
+// =====================
+// ✅ NUEVO: reasignar cliente + recalcular codigoCartera + mover tareas
+// POST /tareas/masivo/reasignar-cliente
+// body: { rutCliente, agenteId, moveAllTasks?, includeVencida? }
+// =====================
+router.post("/masivo/reasignar-cliente", requireAuth, reasignarClienteYTransferirTareas);
 
 // =====================
 // ✅ Masivo desde Excel
@@ -101,15 +121,8 @@ router.post("/crear-desde-plantilla", requireAuth, crearTareasDesdePlantilla);
 // - ?skipDuplicates=true|false            (default true)
 // - ?fechaProgramada=YYYY-MM-DD          (default si la fila no trae fecha)
 // - ?agenteId=123                        (default para clientes nuevos o sin agenteId)
-//
-// Columnas Excel aceptadas (case-insensitive):
-// - rut / RUT
-// - fechaProgramada / fecha / vencimiento   (o usar query fechaProgramada)
-// - plantillaIds / plantillas / plantillaId (IDs: "81,82,83")
-//   o
-// - tarea / tareas / plantillaNombre / plantilla (nombres: "Declaración IVA; Libro compras")
-// - razonSocial / empresa (recomendado para crear cliente)
-// - agenteId / trabajadorId (opcional)
+// - ?agenteEmail=correo@dominio.cl       (recomendado)
+// - ?forceUpdateClienteAgente=true|false (default false)
 // =====================
 
 router.post("/masivo/excel", requireAuth, uploadExcel.single("archivo"), cargarTareasDesdeExcel);
