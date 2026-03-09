@@ -7,6 +7,7 @@ import clienteRoutes from "./routes/cliente.routes";
 import ticketsRoutes from "./routes/tickets.routes";
 import mailboxRoutes from "./routes/mailbox.routes";
 import bitacoraRoutes from "./routes/bitacora.routes";
+import tareasRoutes from "./routes/tareas.routes";
 
 const router = Router();
 
@@ -46,5 +47,13 @@ router.use("/mailbox", mailboxRoutes);
 //  BITACORA
 // =============================
 router.use("/bitacoras", bitacoraRoutes);
+
+
+//==============================
+//  TAREAS
+//==============================
+
+router.use("/tareas", tareasRoutes);
+
 
 export default router;

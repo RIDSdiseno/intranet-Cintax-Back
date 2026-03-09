@@ -301,3 +301,19 @@ export const updateTrabajador = async (req: Request, res: Response) => {
       .json({ error: "Error interno actualizando trabajador" });
   }
 };
+
+// ✅ GET /api/trabajadores/lite
+export const listTrabajadoresLite = async (_req: Request, res: Response) => {
+  try {
+    const rows = await prisma.trabajador.findMany({
+      where: { status: true },
+      select: { id_trabajador: true, nombre: true, email: true },
+      orderBy: { nombre: "asc" },
+    });
+
+    return res.json(rows);
+  } catch (err) {
+    console.error("listTrabajadoresLite error:", err);
+    return res.status(500).json({ error: "Error interno listando trabajadores (lite)" });
+  }
+};

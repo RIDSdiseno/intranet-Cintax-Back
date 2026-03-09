@@ -1,6 +1,7 @@
 import { Router } from "express";
 import {
   listTrabajadores,
+  listTrabajadoresLite,
   updateTrabajador,
 } from "../controllers/trabajador.controller";
 import {
@@ -21,5 +22,7 @@ router.patch(
   requireSupervisorOrAdmin,
   updateTrabajador
 );
+
+router.get("/trabajadores/lite", authGuard, listTrabajadoresLite);
 
 export default router;
