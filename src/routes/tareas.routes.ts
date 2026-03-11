@@ -20,21 +20,30 @@ import {
   upsertClienteTareaExclusion,
   eliminarPlantillaConTareas,
   getTareasAsignadasPorClienteYTrabajador,
-  getTareasPorRuts, // POST /por-ruts
+  getTareasPorRuts,
 } from "../controllers/tareas.Controller";
+
+// ✅ Supervisor / cierre global por tarea
+import {
+  completarTareasComoSupervisor,
+  getTareasPorPlantillaSupervision,
+} from "../controllers/tareas.supervision.controller";
 
 // ✅ Masivo manual (controller aparte, con debug en 400)
 import {
   crearDesdePlantillaMasivo,
   crearDesdePlantillaMasivoSafe,
-  reasignarClienteYTransferirTareas, // ✅ NUEVO
+  reasignarClienteYTransferirTareas,
 } from "../controllers/tareas.masivo.controller";
 
 // ✅ Carga masiva desde Excel (crea cliente/plantilla si no existe)
 import { cargarTareasDesdeExcel } from "../controllers/tareas.masivo.excel.controller";
 
 // ✅ Controlador de métricas
-import { getMetricasSupervision, getMetricasAgente } from "../controllers/tareasMetricas.controller";
+import {
+  getMetricasSupervision,
+  getMetricasAgente,
+} from "../controllers/tareasMetricas.controller";
 
 const router = Router();
 
@@ -56,8 +65,9 @@ const uploadExcel = multer({
   limits: { fileSize: 15 * 1024 * 1024 }, // 15MB
   fileFilter: (_req, file, cb) => {
     const ok =
-      file.mimetype === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" || // .xlsx
-      file.mimetype === "application/vnd.ms-excel"; // .xls (por si acaso)
+      file.mimetype ===
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
+      file.mimetype === "application/vnd.ms-excel";
     if (!ok) return cb(new Error("Archivo inválido. Debe ser .xlsx (o .xls)."));
     cb(null, true);
   },
@@ -86,8 +96,16 @@ router.get("/plantillas", requireAuth, getPlantillas);
 // Crear plantilla
 router.post("/plantillas", requireAuth, crearPlantilla);
 
-// Tareas por plantilla
+// Ruta original de tareas por plantilla
 router.get("/por-plantilla/:idPlantilla", requireAuth, getTareasPorPlantilla);
+
+// ✅ NUEVO: versión supervisión/global por plantilla
+// front sugerido: GET /tareas/supervision/por-plantilla/:idPlantilla?anio=2026&mes=3&trabajadorId=...&rutCliente=...
+router.get(
+  "/supervision/por-plantilla/:idPlantilla",
+  requireAuth,
+  getTareasPorPlantillaSupervision
+);
 
 // Eliminar plantilla con tareas
 router.delete("/plantillas/:id", requireAuth, eliminarPlantillaConTareas);
@@ -100,17 +118,29 @@ router.delete("/plantillas/:id", requireAuth, eliminarPlantillaConTareas);
 router.post("/crear-desde-plantilla", requireAuth, crearTareasDesdePlantilla);
 
 // ✅ NUEVO: masivo "directo" (tu controller createMany)
-router.post("/masivo/crear-desde-plantilla", requireAuth, crearDesdePlantillaMasivo);
+router.post(
+  "/masivo/crear-desde-plantilla",
+  requireAuth,
+  crearDesdePlantillaMasivo
+);
 
 // ✅ NUEVO: versión "SAFE" (reprograma si existe + debug en 400)
-router.post("/masivo/crear-desde-plantilla-safe", requireAuth, crearDesdePlantillaMasivoSafe);
+router.post(
+  "/masivo/crear-desde-plantilla-safe",
+  requireAuth,
+  crearDesdePlantillaMasivoSafe
+);
 
 // =====================
 // ✅ NUEVO: reasignar cliente + recalcular codigoCartera + mover tareas
 // POST /tareas/masivo/reasignar-cliente
 // body: { rutCliente, agenteId, moveAllTasks?, includeVencida? }
 // =====================
-router.post("/masivo/reasignar-cliente", requireAuth, reasignarClienteYTransferirTareas);
+router.post(
+  "/masivo/reasignar-cliente",
+  requireAuth,
+  reasignarClienteYTransferirTareas
+);
 
 // =====================
 // ✅ Masivo desde Excel
@@ -125,7 +155,12 @@ router.post("/masivo/reasignar-cliente", requireAuth, reasignarClienteYTransferi
 // - ?forceUpdateClienteAgente=true|false (default false)
 // =====================
 
-router.post("/masivo/excel", requireAuth, uploadExcel.single("archivo"), cargarTareasDesdeExcel);
+router.post(
+  "/masivo/excel",
+  requireAuth,
+  uploadExcel.single("archivo"),
+  cargarTareasDesdeExcel
+);
 
 // =====================
 // Tareas asignadas (estado / archivos / resumen)
@@ -136,6 +171,13 @@ router.patch("/:id/estado", requireAuth, actualizarEstado);
 
 // Resumen supervisión (front: /tareas/supervision/resumen)
 router.get("/supervision/resumen", requireAuth, getResumenSupervision);
+
+// ✅ NUEVO: completar/cerrar tareas como supervisor
+router.post(
+  "/supervision/completar",
+  requireAuth,
+  completarTareasComoSupervisor
+);
 
 // Asegurar carpeta Drive para tarea (debug/manual)
 router.post("/:id/ensure-drive-folder", requireAuth, ensureDriveFolder);
@@ -157,7 +199,11 @@ router.get("/supervision/metricas/agente/:id", requireAuth, getMetricasAgente);
 // Estado "no aplica" + editor de tareas
 // =====================
 
-router.get("/plantillas-con-aplica", requireAuth, listPlantillasConAplicaPorCliente);
+router.get(
+  "/plantillas-con-aplica",
+  requireAuth,
+  listPlantillasConAplicaPorCliente
+);
 router.patch("/exclusion", requireAuth, upsertClienteTareaExclusion);
 
 // =====================
