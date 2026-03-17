@@ -28,14 +28,16 @@ model Trabajador {
   tareasAsignadas    TareaAsignada[]  @relation("TrabajadorTareas")
   tareasDefault      TareaPlantilla[] @relation("TareaResponsableDefault")
   tickets            Ticket[]
-
   ticketMessages     TicketMessage[]  @relation("TicketMessageAuthor")
 
   // ✅ NUEVO (ADITIVO, seguro en producción)
   ticketEvents       TicketEvent[]    @relation("TicketEventActor")
 
-  // ✅ NUEVO (ADITIVO): bitácoras diarias
+  // ✅ Bitácoras diarias
   bitacoras          BitacoraDiaria[]
+
+  // ✅ NUEVO: bitácoras por cliente
+  clienteBitacoras   BitacoraCliente[]
 }
 
 model RefreshToken {
@@ -67,7 +69,7 @@ model Ticket {
   areaAsignada   Area?
 
   trabajador     Trabajador?     @relation(fields: [trabajadorId], references: [id_trabajador])
-  messages       TicketMessage[]  @relation("TicketMessages")
+  messages       TicketMessage[] @relation("TicketMessages")
 
   // ✅ NUEVO (ADITIVO, seguro en producción)
   events         TicketEvent[]
@@ -202,15 +204,18 @@ model TareaAsignada {
 }
 
 model Cliente {
-  id            Int      @id @default(autoincrement())
-  rut           String   @unique   // ✅ NUEVO: evita duplicados de cliente por RUT
+  id            Int               @id @default(autoincrement())
+  rut           String            @unique
   razonSocial   String
   alias         String?
-  activo        Boolean  @default(true)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  activo        Boolean           @default(true)
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
   agenteId      Int?
   codigoCartera String?
+
+  // ✅ NUEVO: historial de bitácoras del cliente
+  bitacoras     BitacoraCliente[]
 
   @@index([agenteId])
   @@index([codigoCartera])
@@ -246,7 +251,7 @@ model ClienteTareaExclusion {
   @@index([tareaPlantillaId])
 }
 
-// ✅ NUEVO (ADITIVO): Bitácoras diarias
+// ✅ Bitácoras diarias
 model BitacoraDiaria {
   id           Int        @id @default(autoincrement())
   trabajadorId Int
@@ -265,6 +270,30 @@ model BitacoraDiaria {
   @@unique([trabajadorId, fecha])
   @@index([fecha])
   @@index([trabajadorId, fecha])
+}
+
+// ✅ NUEVO: Bitácora por cliente
+model BitacoraCliente {
+  id           Int        @id @default(autoincrement())
+  clienteId    Int
+  trabajadorId Int
+
+  // fecha asociada a la gestión realizada
+  fechaGestion DateTime
+
+  titulo       String?
+  contenido    String
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  cliente      Cliente    @relation(fields: [clienteId], references: [id], onDelete: Cascade)
+  trabajador   Trabajador @relation(fields: [trabajadorId], references: [id_trabajador], onDelete: Cascade)
+
+  @@index([clienteId])
+  @@index([trabajadorId])
+  @@index([fechaGestion])
+  @@index([clienteId, fechaGestion])
+  @@index([clienteId, createdAt])
 }
 
 enum TipoRelacion {

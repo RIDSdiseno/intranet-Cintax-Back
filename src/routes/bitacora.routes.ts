@@ -9,35 +9,93 @@ import {
   deleteBitacoraById,
 } from "../controllers/bitacora.controller";
 
-// ⚠️ Ajusta esta importación al middleware real de tu proyecto.
-// Debe setear req.user (id_trabajador, areaInterna, isSupervisor).
+import {
+  createClienteBitacora,
+  listClienteBitacoras,
+  getClienteBitacoraById,
+  updateClienteBitacoraById,
+  deleteClienteBitacoraById,
+  listClienteBitacorasEquipo
+} from "../controllers/clienteBitacora.controller";
+
 import { requireAuth } from "../middlewares/requireAuth";
 
 const router = Router();
 
+router.use(requireAuth);
+
 /**
- * Convención:
- * - /api/bitacoras/mias => trabajador ve solo lo suyo
- * - /api/bitacoras      => admin/supervisor ve global (filtrable)
- * - /api/bitacoras/:id  => dueño o admin/supervisor
+ * =========================================================
+ * BITÁCORA DIARIA PERSONAL
+ * =========================================================
+ *
+ * Base montada:
+ * app.use("/api/bitacoras", router)
+ *
+ * Endpoints finales:
+ * - POST   /api/bitacoras
+ * - GET    /api/bitacoras/mias
+ * - GET    /api/bitacoras
+ * - GET    /api/bitacoras/:id
+ * - PUT    /api/bitacoras/:id
+ * - DELETE /api/bitacoras/:id
  */
 
-// Crear/actualizar bitácora del día (por fecha)
-router.post("/", requireAuth, upsertBitacora);
+// Crear/actualizar bitácora del día
+router.post("/", upsertBitacora);
 
 // Listar mis bitácoras
-router.get("/mias", requireAuth, listMisBitacoras);
+router.get("/mias", listMisBitacoras);
 
-// Listar global (admin/supervisor) — el controller valida permisos
-router.get("/", requireAuth, listBitacoras);
+// Listar global (admin/supervisor)
+router.get("/", listBitacoras);
 
-// Obtener 1 por id (dueño o admin/supervisor)
-router.get("/:id", requireAuth, getBitacoraById);
+/**
+ * =========================================================
+ * BITÁCORA POR CLIENTE
+ * =========================================================
+ *
+ * Endpoints finales:
+ * - POST   /api/bitacoras/clientes/:id/bitacoras
+ * - GET    /api/bitacoras/clientes/:id/bitacoras
+ * - GET    /api/bitacoras/clientes/bitacoras/:bitacoraId
+ * - PUT    /api/bitacoras/clientes/bitacoras/:bitacoraId
+ * - DELETE /api/bitacoras/clientes/bitacoras/:bitacoraId
+ */
+router.get(
+  "/clientes/equipo",
+  listClienteBitacorasEquipo
+);
+// Crear bitácora para un cliente
+router.post("/clientes/:id/bitacoras", createClienteBitacora);
 
-// Actualizar por id (dueño o admin)
-router.put("/:id", requireAuth, updateBitacoraById);
+// Listar bitácoras de un cliente
+router.get("/clientes/:id/bitacoras", listClienteBitacoras);
 
-// Eliminar por id (dueño o admin)
-router.delete("/:id", requireAuth, deleteBitacoraById);
+// Obtener una bitácora de cliente por id
+router.get("/clientes/bitacoras/:bitacoraId", getClienteBitacoraById);
+
+// Actualizar una bitácora de cliente
+router.put("/clientes/bitacoras/:bitacoraId", updateClienteBitacoraById);
+
+// Eliminar una bitácora de cliente
+router.delete("/clientes/bitacoras/:bitacoraId", deleteClienteBitacoraById);
+
+/**
+ * =========================================================
+ * BITÁCORA DIARIA POR ID
+ * =========================================================
+ */
+
+// Obtener 1 por id
+router.get("/:id", getBitacoraById);
+
+// Actualizar por id
+router.put("/:id", updateBitacoraById);
+
+// Eliminar por id
+router.delete("/:id", deleteBitacoraById);
+
+
 
 export default router;
