@@ -1,6 +1,6 @@
 // src/controllers/tareas.controller.ts
 
-import { Request, Response } from "express";
+import { Request, Response, NextFunction } from "express";
 import { prisma } from "../lib/prisma";
 import type { AuthJwtPayload } from "../middlewares/auth.middleware";
 import { ensureContaTaskFolderForTareaAsignada } from "../services/driveContaTasks";
@@ -22,6 +22,17 @@ function bufferToStream(buffer: Buffer): Readable {
 export interface AuthRequest extends Request {
   user?: AuthJwtPayload;
 }
+
+type ReactivarTareasPayload = {
+  tareaIds?: number[];
+  trabajadorId?: number;
+  rutCliente?: string;
+  rutClientes?: string[];
+  tareaPlantillaId?: number;
+  anio?: number;
+  mes?: number;
+  comentario?: string;
+};
 
 // ---------------------------------------------------------------------------
 // 1) Vista 1 – Obtener los RUT que tiene a su cargo el trabajador
@@ -1009,9 +1020,9 @@ export const getTareasPorRuts = async (req: AuthRequest, res: Response) => {
       ruts?: string[];
       anio?: number | string;
       mes?: number | string;
+      includeNoAplica?: boolean;
     };
 
-    // trabajadorId: si viene en body úsalo, si no usa el del token
     let trabajadorId: number;
     if (body.trabajadorId != null) {
       const parsed = Number(body.trabajadorId);
@@ -1031,7 +1042,9 @@ export const getTareasPorRuts = async (req: AuthRequest, res: Response) => {
       return res.json({ tareas: [] });
     }
 
-    // Filtro opcional por año/mes
+    const includeNoAplica =
+      body.includeNoAplica === true || String(body.includeNoAplica) === "true";
+
     let fechaFiltro: { gte: Date; lt: Date } | undefined;
     if (body.anio != null && body.mes != null) {
       const year = Number(body.anio);
@@ -1049,11 +1062,16 @@ export const getTareasPorRuts = async (req: AuthRequest, res: Response) => {
     const where: any = {
       trabajadorId,
       rutCliente: { in: ruts },
-      estado: { not: "NO_APLICA" },
     };
-    if (fechaFiltro) where.fechaProgramada = fechaFiltro;
 
-    // ✅ IMPORTANTE: select en vez de include completo (menos payload)
+    if (!includeNoAplica) {
+      where.estado = { not: "NO_APLICA" };
+    }
+
+    if (fechaFiltro) {
+      where.fechaProgramada = fechaFiltro;
+    }
+
     const tareas = await prisma.tareaAsignada.findMany({
       where,
       orderBy: [{ rutCliente: "asc" }, { fechaProgramada: "asc" }],
@@ -1070,5 +1088,317 @@ export const getTareasPorRuts = async (req: AuthRequest, res: Response) => {
   }
 };
 
+export const desactivarTareasSupervision = async (req: AuthRequest, res: Response) => {
+  try {
+    if (!req.user?.id) {
+      return res.status(401).json({ message: "No autorizado" });
+    }
 
+    const body = (req.body ?? {}) as {
+      tareaIds?: number[];
+      trabajadorId?: number | string;
+      rutCliente?: string;
+      anio?: number | string;
+      mes?: number | string;
+      incluirPendientes?: boolean;
+      incluirEnProceso?: boolean;
+      incluirVencidas?: boolean;
+      comentario?: string;
+    };
 
+    const comentario = String(body.comentario ?? "").trim();
+
+    // =========================================================
+    // CASO 1: desactivar por IDs seleccionados
+    // =========================================================
+    if (Array.isArray(body.tareaIds) && body.tareaIds.length > 0) {
+      const tareaIds = Array.from(
+        new Set(
+          body.tareaIds
+            .map((id) => Number(id))
+            .filter((id) => Number.isFinite(id) && id > 0)
+        )
+      );
+
+      if (tareaIds.length === 0) {
+        return res.status(400).json({ message: "tareaIds inválidos" });
+      }
+
+      const result = await prisma.tareaAsignada.updateMany({
+        where: {
+          id_tarea_asignada: { in: tareaIds },
+          estado: { notIn: ["COMPLETADA", "NO_APLICA"] },
+        },
+        data: {
+          estado: "NO_APLICA",
+          comentarios: comentario || undefined,
+          fechaComplecion: null,
+        },
+      });
+
+      return res.json({
+        message: "Tareas desactivadas correctamente",
+        count: result.count,
+      });
+    }
+
+    // =========================================================
+    // CASO 2: desactivar por filtros
+    // =========================================================
+    const trabajadorId = Number(body.trabajadorId);
+    if (!Number.isFinite(trabajadorId) || trabajadorId <= 0) {
+      return res.status(400).json({ message: "trabajadorId es obligatorio" });
+    }
+
+    const rutCliente = body.rutCliente
+      ? String(body.rutCliente).trim()
+      : undefined;
+
+    const anio = Number(body.anio);
+    const mes = Number(body.mes);
+
+    if (!Number.isFinite(anio) || !Number.isFinite(mes) || mes < 1 || mes > 12) {
+      return res.status(400).json({ message: "anio/mes inválidos" });
+    }
+
+    const inicio = new Date(anio, mes - 1, 1);
+    const fin = new Date(anio, mes, 1);
+
+    const estadosObjetivo: string[] = [];
+    if (body.incluirPendientes) estadosObjetivo.push("PENDIENTE");
+    if (body.incluirEnProceso) estadosObjetivo.push("EN_PROCESO");
+    if (body.incluirVencidas) estadosObjetivo.push("VENCIDA");
+
+    if (estadosObjetivo.length === 0) {
+      return res.status(400).json({
+        message: "Debes indicar al menos un tipo de estado a desactivar",
+      });
+    }
+
+    const where: any = {
+      trabajadorId,
+      fechaProgramada: {
+        gte: inicio,
+        lt: fin,
+      },
+      estado: {
+        in: estadosObjetivo,
+      },
+    };
+
+    if (rutCliente) {
+      where.rutCliente = rutCliente;
+    }
+
+    const result = await prisma.tareaAsignada.updateMany({
+      where,
+      data: {
+        estado: "NO_APLICA",
+        comentarios: comentario || undefined,
+        fechaComplecion: null,
+      },
+    });
+
+    return res.json({
+      message: "Tareas desactivadas correctamente",
+      count: result.count,
+    });
+  } catch (error) {
+    console.error("[desactivarTareasSupervision] error:", error);
+    return res.status(500).json({ message: "Error desactivando tareas" });
+  }
+};
+
+// ---------------------------------------------------------------------------
+// 2.C) Obtener tareas desactivadas (NO_APLICA) por trabajador / ruts
+//    POST /tareas/desactivadas
+//    body: { trabajadorId?, ruts?: string[], anio?, mes? }
+// ---------------------------------------------------------------------------
+export const getTareasDesactivadas = async (req: AuthRequest, res: Response) => {
+  try {
+    if (!req.user?.id) {
+      return res.status(401).json({ message: "No autorizado" });
+    }
+
+    const body = (req.body ?? {}) as {
+      trabajadorId?: number | string;
+      ruts?: string[];
+      anio?: number | string;
+      mes?: number | string;
+    };
+
+    let trabajadorId: number;
+    if (body.trabajadorId != null) {
+      const parsed = Number(body.trabajadorId);
+      if (Number.isNaN(parsed) || parsed <= 0) {
+        return res.status(400).json({ message: "trabajadorId inválido" });
+      }
+      trabajadorId = parsed;
+    } else {
+      trabajadorId = req.user.id;
+    }
+
+    const ruts = Array.from(
+      new Set((body.ruts ?? []).map((r) => String(r ?? "").trim()).filter(Boolean))
+    );
+
+    let fechaFiltro: { gte: Date; lt: Date } | undefined;
+    if (body.anio != null && body.mes != null) {
+      const year = Number(body.anio);
+      const month = Number(body.mes);
+
+      if (Number.isNaN(year) || Number.isNaN(month) || month < 1 || month > 12) {
+        return res.status(400).json({
+          message: "anio/mes inválidos. Ej: { anio: 2026, mes: 3 }",
+        });
+      }
+
+      const inicio = new Date(year, month - 1, 1);
+      const fin = new Date(year, month, 1);
+      fechaFiltro = { gte: inicio, lt: fin };
+    }
+
+    const where: any = {
+      trabajadorId,
+      estado: "NO_APLICA",
+    };
+
+    if (ruts.length > 0) {
+      where.rutCliente = { in: ruts };
+    }
+
+    if (fechaFiltro) {
+      where.fechaProgramada = fechaFiltro;
+    }
+
+    const tareas = await prisma.tareaAsignada.findMany({
+      where,
+      orderBy: [{ rutCliente: "asc" }, { fechaProgramada: "asc" }],
+      include: {
+        tareaPlantilla: true,
+        asignado: {
+          select: {
+            id_trabajador: true,
+            nombre: true,
+            email: true,
+          },
+        },
+      },
+    });
+
+    return res.json({
+      tareas,
+      count: tareas.length,
+    });
+  } catch (error) {
+    console.error("[getTareasDesactivadas] error:", error);
+    return res.status(500).json({ message: "Error obteniendo tareas desactivadas" });
+  }
+};
+
+export async function reactivarTareasSupervision(
+  req: Request,
+  res: Response,
+  next: NextFunction
+) {
+  try {
+    const {
+      tareaIds,
+      trabajadorId,
+      rutCliente,
+      rutClientes,
+      tareaPlantillaId,
+      anio,
+      mes,
+      comentario,
+    } = req.body as ReactivarTareasPayload;
+
+    const where: any = {
+      estado: "NO_APLICA",
+    };
+
+    if (Array.isArray(tareaIds) && tareaIds.length > 0) {
+      where.id_tarea_asignada = {
+        in: tareaIds.map(Number).filter((n) => !Number.isNaN(n)),
+      };
+    } else {
+      if (trabajadorId) {
+        where.trabajadorId = Number(trabajadorId);
+      }
+
+      const rutsFinales = [
+        ...(rutCliente ? [rutCliente] : []),
+        ...(Array.isArray(rutClientes) ? rutClientes : []),
+      ].filter(Boolean);
+
+      if (rutsFinales.length > 0) {
+        where.rutCliente = { in: rutsFinales };
+      }
+
+      if (tareaPlantillaId) {
+        where.tareaPlantillaId = Number(tareaPlantillaId);
+      }
+
+      if (anio && mes) {
+        const fechaDesde = new Date(Number(anio), Number(mes) - 1, 1, 0, 0, 0, 0);
+        const fechaHasta = new Date(Number(anio), Number(mes), 1, 0, 0, 0, 0);
+
+        where.fechaProgramada = {
+          gte: fechaDesde,
+          lt: fechaHasta,
+        };
+      } else if (anio) {
+        const fechaDesde = new Date(Number(anio), 0, 1, 0, 0, 0, 0);
+        const fechaHasta = new Date(Number(anio) + 1, 0, 1, 0, 0, 0, 0);
+
+        where.fechaProgramada = {
+          gte: fechaDesde,
+          lt: fechaHasta,
+        };
+      }
+    }
+
+    const tareas = await prisma.tareaAsignada.findMany({
+      where,
+      select: {
+        id_tarea_asignada: true,
+      },
+    });
+
+    if (!tareas.length) {
+      return res.status(200).json({
+        ok: true,
+        message: "No se encontraron tareas desactivadas para reactivar.",
+        count: 0,
+        tareas: [],
+      });
+    }
+
+    const ids = tareas.map((t) => t.id_tarea_asignada);
+
+    const dataUpdate: any = {
+      estado: "PENDIENTE",
+      fechaComplecion: null,
+    };
+
+    if (typeof comentario === "string" && comentario.trim()) {
+      dataUpdate.comentarios = comentario.trim();
+    }
+
+    const result = await prisma.tareaAsignada.updateMany({
+      where: {
+        id_tarea_asignada: { in: ids },
+      },
+      data: dataUpdate,
+    });
+
+    return res.status(200).json({
+      ok: true,
+      message: "Tareas reactivadas correctamente.",
+      count: result.count,
+      tareas: ids,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
