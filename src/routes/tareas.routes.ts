@@ -21,6 +21,9 @@ import {
   eliminarPlantillaConTareas,
   getTareasAsignadasPorClienteYTrabajador,
   getTareasPorRuts,
+  desactivarTareasSupervision,
+  getTareasDesactivadas,
+  reactivarTareasSupervision,
 } from "../controllers/tareas.Controller";
 
 // ✅ Supervisor / cierre global por tarea
@@ -179,6 +182,13 @@ router.post(
   completarTareasComoSupervisor
 );
 
+// ✅ NUEVO: desactivar tareas como supervisor
+router.patch(
+  "/supervision/desactivar",
+  requireAuth,
+  desactivarTareasSupervision
+);
+
 // Asegurar carpeta Drive para tarea (debug/manual)
 router.post("/:id/ensure-drive-folder", requireAuth, ensureDriveFolder);
 
@@ -222,5 +232,13 @@ router.post(
   uploadCorreo.array("adjuntos"),
   CorreoTareasController.enviarCorreo
 );
+
+router.patch(
+  "/supervision/reactivar",
+  requireAuth,
+  reactivarTareasSupervision
+);
+
+router.post("/desactivadas", requireAuth, getTareasDesactivadas);
 
 export default router;
