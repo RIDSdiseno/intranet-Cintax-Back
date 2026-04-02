@@ -25,12 +25,17 @@ async function ensureFolderInParent(
   parentId: string,
   name: string
 ): Promise<string> {
-  const existingId = await findFolderByName(drive, parentId, name);
+  const folderName = String(name ?? "").trim();
+  if (!folderName) {
+    throw new Error("No se puede crear/buscar una carpeta con nombre vacío");
+  }
+
+  const existingId = await findFolderByName(drive, parentId, folderName);
   if (existingId) return existingId;
 
   const res = await drive.files.create({
     requestBody: {
-      name,
+      name: folderName,
       mimeType: "application/vnd.google-apps.folder",
       parents: [parentId],
     },
@@ -38,8 +43,9 @@ async function ensureFolderInParent(
   });
 
   if (!res.data.id) {
-    throw new Error(`No se pudo crear la carpeta "${name}"`);
+    throw new Error(`No se pudo crear la carpeta "${folderName}"`);
   }
+
   return res.data.id;
 }
 
@@ -61,8 +67,13 @@ async function ensureContaWorkerFolder(opts: {
   year: number;
   workerFolderCode: string; // "A01", "A02", etc.
 }): Promise<string> {
+  const workerFolderCode = String(opts.workerFolderCode ?? "").trim();
+  if (!workerFolderCode) {
+    throw new Error("workerFolderCode es obligatorio");
+  }
+
   const baseId = await getContaBaseFolderId(opts.drive, opts.year);
-  return ensureFolderInParent(opts.drive, baseId, opts.workerFolderCode.trim());
+  return ensureFolderInParent(opts.drive, baseId, workerFolderCode);
 }
 
 /**
@@ -82,6 +93,10 @@ export async function ensureContaTaskTareaFolder(opts: {
 }): Promise<string> {
   const drive = getAdminDriveClient();
 
+  if (!(opts.fechaProgramada instanceof Date) || Number.isNaN(opts.fechaProgramada.getTime())) {
+    throw new Error("fechaProgramada inválida");
+  }
+
   const year = opts.fechaProgramada.getFullYear();
 
   // 1) Carpeta del trabajador: CINTAX/YEAR/CONTA/A0X
@@ -92,21 +107,22 @@ export async function ensureContaTaskTareaFolder(opts: {
   });
 
   // 2) / RUT
-  const rutName = (opts.rutCliente || "").trim() || "SIN_RUT";
+  const rutName = String(opts.rutCliente ?? "").trim() || "SIN_RUT";
   const rutFolderId = await ensureFolderInParent(drive, workerFolderId, rutName);
 
   // 3) / MES (01..12) desde fechaProgramada
-  const mes = opts.fechaProgramada.getMonth() + 1; // 1..12
+  const mes = opts.fechaProgramada.getMonth() + 1;
   const mesName = String(mes).padStart(2, "0");
   const mesFolderId = await ensureFolderInParent(drive, rutFolderId, mesName);
 
   // 4) / NOMBRE_TAREA (+ sufijo opcional)
-  const baseTaskName = opts.nombreTarea.trim();
-  if (!baseTaskName) throw new Error("Nombre de tarea vacío");
+  const baseTaskName = String(opts.nombreTarea ?? "").trim();
+  if (!baseTaskName) {
+    throw new Error("Nombre de tarea vacío");
+  }
 
-  const taskName = opts.taskFolderSuffix
-    ? `${baseTaskName} - ${opts.taskFolderSuffix}`
-    : baseTaskName;
+  const suffix = String(opts.taskFolderSuffix ?? "").trim();
+  const taskName = suffix ? `${baseTaskName} - ${suffix}` : baseTaskName;
 
   const taskFolderId = await ensureFolderInParent(drive, mesFolderId, taskName);
 
@@ -124,55 +140,81 @@ export async function ensureContaTaskTareaFolder(opts: {
  *  .../12/Conciliación Bancaria - 2025-12-06/TAREA
  *
  * Guarda el id en driveTareaFolderId y lo devuelve.
+ *
+ * Regla:
+ * - Si la tarea existe
+ * - Si la plantilla de la tarea es CONTA
+ * - Si la tarea tiene trabajador asignado con carpetaDriveCodigo
+ * entonces se asegura la carpeta.
+ *
+ * NO se bloquea por areaInterna del trabajador.
  */
 export async function ensureContaTaskFolderForTareaAsignada(
   tareaId: number
 ): Promise<string> {
+  const tareaIdNum = Number(tareaId);
+  if (!Number.isFinite(tareaIdNum) || tareaIdNum <= 0) {
+    throw new Error("tareaId inválido");
+  }
+
   const tarea = await prisma.tareaAsignada.findUnique({
-    where: { id_tarea_asignada: tareaId },
+    where: { id_tarea_asignada: tareaIdNum },
     include: {
       tareaPlantilla: true,
       asignado: true,
     },
   });
 
-  if (!tarea) throw new Error("Tarea no encontrada");
+  if (!tarea) {
+    throw new Error("Tarea no encontrada");
+  }
 
-  // si ya está vinculada a una carpeta TAREA, no hacemos nada
-  if (tarea.driveTareaFolderId) return tarea.driveTareaFolderId;
+  if (tarea.driveTareaFolderId) {
+    return tarea.driveTareaFolderId;
+  }
 
-  if (!tarea.asignado) throw new Error("Tarea sin trabajador asignado");
+  if (!tarea.asignado) {
+    throw new Error("Tarea sin trabajador asignado");
+  }
 
-  if (tarea.asignado.areaInterna !== Area.CONTA) {
+  if (tarea.tareaPlantilla?.area !== Area.CONTA) {
     throw new Error("Esta función está pensada solo para tareas del área CONTA");
   }
 
-  const workerCode = tarea.asignado.carpetaDriveCodigo;
+  const workerCode = String(tarea.asignado.carpetaDriveCodigo ?? "").trim();
   if (!workerCode) {
     throw new Error(
       `Trabajador ${tarea.asignado.id_trabajador} no tiene carpetaDriveCodigo (ej: "A01")`
     );
   }
 
-  if (!tarea.rutCliente) throw new Error("Tarea sin rutCliente");
+  const rutCliente = String(tarea.rutCliente ?? "").trim();
+  if (!rutCliente) {
+    throw new Error("Tarea sin rutCliente");
+  }
 
-  const tareaPlantillaNombre = tarea.tareaPlantilla?.nombre;
-  if (!tareaPlantillaNombre) throw new Error("Tarea sin nombre de plantilla");
+  const tareaPlantillaNombre = String(tarea.tareaPlantilla?.nombre ?? "").trim();
+  if (!tareaPlantillaNombre) {
+    throw new Error("Tarea sin nombre de plantilla");
+  }
 
-  // ✅ si es semanal, carpeta única por ocurrencia
+  if (!(tarea.fechaProgramada instanceof Date) || Number.isNaN(tarea.fechaProgramada.getTime())) {
+    throw new Error("Tarea sin fechaProgramada válida");
+  }
+
   const frecuencia = tarea.tareaPlantilla?.frecuencia;
   const suffix = frecuencia === "SEMANAL" ? formatYMD(tarea.fechaProgramada) : undefined;
 
   const folderId = await ensureContaTaskTareaFolder({
     workerFolderCode: workerCode,
-    rutCliente: tarea.rutCliente,
+    rutCliente,
     fechaProgramada: tarea.fechaProgramada,
     nombreTarea: tareaPlantillaNombre,
     taskFolderSuffix: suffix,
   });
 
   await prisma.tareaAsignada.update({
-    where: { id_tarea_asignada: tareaId },
+    where: { id_tarea_asignada: tareaIdNum },
     data: { driveTareaFolderId: folderId },
   });
 

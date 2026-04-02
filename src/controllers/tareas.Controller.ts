@@ -9,6 +9,7 @@ import { getAdminDriveClient } from "../lib/googleDrive";
 import type { drive_v3 } from "googleapis";
 import { Readable } from "stream";
 import { normNombrePlantilla } from "../utils/normNombrePlantilla";
+import * as fs from "fs";
 
 // Helper para convertir Buffer → ReadableStream
 function bufferToStream(buffer: Buffer): Readable {
@@ -631,20 +632,38 @@ export const ensureDriveFolder = async (req: AuthRequest, res: Response) => {
 // ---------------------------------------------------------------------------
 export const subirArchivo = async (req: AuthRequest, res: Response) => {
   try {
-    if (!req.user?.id) return res.status(401).json({ message: "No autorizado" });
+    if (!req.user?.id) {
+      return res.status(401).json({ message: "No autorizado" });
+    }
 
     const idTarea = Number(req.params.id);
-    if (Number.isNaN(idTarea)) return res.status(400).json({ message: "ID de tarea inválido" });
+    if (!Number.isFinite(idTarea) || idTarea <= 0) {
+      return res.status(400).json({ message: "ID de tarea inválido" });
+    }
 
     const file = (req as any).file as Express.Multer.File | undefined;
-    if (!file) return res.status(400).json({ message: "No se recibió ningún archivo" });
+    if (!file) {
+      return res.status(400).json({ message: "No se recibió ningún archivo" });
+    }
 
     const tarea = await prisma.tareaAsignada.findUnique({
       where: { id_tarea_asignada: idTarea },
-      include: { tareaPlantilla: true, asignado: true },
+      include: {
+        tareaPlantilla: true,
+        asignado: true,
+      },
     });
 
-    if (!tarea) return res.status(404).json({ message: "Tarea no encontrada" });
+    if (!tarea) {
+      return res.status(404).json({ message: "Tarea no encontrada" });
+    }
+
+    // Solo el dueño de la tarea puede subir archivo
+    if (tarea.trabajadorId !== req.user.id) {
+      return res.status(403).json({
+        message: "No tienes permiso para subir archivos a esta tarea",
+      });
+    }
 
     if (tarea.tareaPlantilla?.area !== Area.CONTA) {
       return res.status(400).json({
@@ -652,8 +671,32 @@ export const subirArchivo = async (req: AuthRequest, res: Response) => {
       });
     }
 
+    console.log("[subirArchivo] inicio", {
+      idTarea,
+      userId: req.user.id,
+      trabajadorIdTarea: tarea.trabajadorId,
+      plantillaArea: tarea.tareaPlantilla?.area,
+      originalname: file.originalname,
+      mimetype: file.mimetype,
+      size: file.size,
+      hasBuffer: !!file.buffer,
+      hasPath: !!(file as any).path,
+    });
+
     const folderId = await ensureContaTaskFolderForTareaAsignada(idTarea);
     const drive = getAdminDriveClient() as drive_v3.Drive;
+
+    let mediaBody: NodeJS.ReadableStream;
+
+    if (file.buffer && file.buffer.length > 0) {
+      mediaBody = bufferToStream(file.buffer);
+    } else if ((file as any).path) {
+      mediaBody = fs.createReadStream((file as any).path);
+    } else {
+      return res.status(500).json({
+        message: "No se pudo obtener el contenido del archivo para subirlo",
+      });
+    }
 
     const uploadRes = await drive.files.create({
       requestBody: {
@@ -661,8 +704,18 @@ export const subirArchivo = async (req: AuthRequest, res: Response) => {
         mimeType: file.mimetype,
         parents: [folderId],
       },
-      media: { mimeType: file.mimetype, body: bufferToStream(file.buffer) },
+      media: {
+        mimeType: file.mimetype,
+        body: mediaBody,
+      },
       fields: "id, webViewLink, webContentLink, name",
+    });
+
+    console.log("[subirArchivo] upload ok", {
+      tareaId: idTarea,
+      driveFolderId: folderId,
+      driveFileId: uploadRes.data.id,
+      driveFileName: uploadRes.data.name,
     });
 
     return res.status(201).json({
@@ -673,9 +726,18 @@ export const subirArchivo = async (req: AuthRequest, res: Response) => {
       webViewLink: uploadRes.data.webViewLink,
       webContentLink: uploadRes.data.webContentLink,
     });
-  } catch (error) {
-    console.error("[subirArchivo] error:", error);
-    return res.status(500).json({ message: "Error subiendo archivo de tarea" });
+  } catch (error: any) {
+    console.error("[subirArchivo] error:", {
+      message: error?.message,
+      stack: error?.stack,
+      response: error?.response?.data,
+      errors: error?.errors,
+    });
+
+    return res.status(500).json({
+      message: "Error subiendo archivo de tarea",
+      detail: error?.message ?? "unknown",
+    });
   }
 };
 
