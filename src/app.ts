@@ -49,7 +49,7 @@ const ENABLE_NOTI_CRON = process.env.ENABLE_NOTI_CRON !== "false"; // default tr
 // =============================
 
 // fallback DEV si CORS_ORIGINS no está seteado
-const defaultDevOrigins = ["http://localhost:5173", "http://localhost:4173"];
+const defaultDevOrigins = ["http://localhost:5173", "http://localhost:4173", "http://localhost:5174"];
 
 const rawOrigins =
   process.env.CORS_ORIGINS && process.env.CORS_ORIGINS.trim().length > 0
