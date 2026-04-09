@@ -1,23 +1,38 @@
 // src/jobs/generarTareas.ts
-import { PrismaClient, Area, EstadoTarea, FrecuenciaTarea } from "@prisma/client";
+import {
+  PrismaClient,
+  Area,
+  EstadoTarea,
+  FrecuenciaTarea,
+  Presentacion,
+} from "@prisma/client";
 
 const prisma = new PrismaClient();
 
+const SAFE_HOUR = 12;
+
+// util: fija hora segura
+function atSafeHour(date: Date): Date {
+  const d = new Date(date);
+  d.setHours(SAFE_HOUR, 0, 0, 0);
+  return d;
+}
+
 // util: primer día del mes
 function startOfMonth(date: Date): Date {
-  return new Date(date.getFullYear(), date.getMonth(), 1, 0, 0, 0, 0);
+  return new Date(date.getFullYear(), date.getMonth(), 1, SAFE_HOUR, 0, 0, 0);
 }
 
 // util: primer día del mes siguiente
 function startOfNextMonth(date: Date): Date {
-  return new Date(date.getFullYear(), date.getMonth() + 1, 1, 0, 0, 0, 0);
+  return new Date(date.getFullYear(), date.getMonth() + 1, 1, SAFE_HOUR, 0, 0, 0);
 }
 
-// util: lunes de la semana de `date` (asumiendo lunes=1)
+// util: lunes de la semana de `date`
 function startOfWeek(date: Date): Date {
   const d = new Date(date);
-  const day = d.getDay() || 7; // domingo=0 → 7
-  d.setHours(0, 0, 0, 0);
+  const day = d.getDay() || 7; // domingo=0 -> 7
+  d.setHours(SAFE_HOUR, 0, 0, 0);
   if (day > 1) d.setDate(d.getDate() - (day - 1));
   return d;
 }
@@ -29,71 +44,127 @@ function startOfNextWeek(date: Date): Date {
   return start;
 }
 
-// calcula próxima fecha de vencimiento según plantilla
-function getNextDueDate(tpl: any, today: Date): Date | null {
-  // OJO: tpl.frecuencia viene del enum FrecuenciaTarea,
-  // pero Prisma lo expone como string: "MENSUAL" | "SEMANAL" | "UNICA"
-  if (tpl.frecuencia === "MENSUAL" && tpl.diaMesVencimiento) {
-    const day = tpl.diaMesVencimiento as number;
-    const thisMonthDue = new Date(
-      today.getFullYear(),
-      today.getMonth(),
-      day,
-      9,
-      0,
-      0,
-      0
-    );
+function clampDayToMonth(year: number, month1to12: number, day: number) {
+  const lastDay = new Date(year, month1to12, 0).getDate();
+  return Math.max(1, Math.min(day, lastDay));
+}
 
-    if (thisMonthDue >= today) {
-      return thisMonthDue;
-    }
-    // si ya pasó, siguiente mes
-    return new Date(
+function buildDate(year: number, month1to12: number, day: number) {
+  return new Date(year, month1to12 - 1, day, SAFE_HOUR, 0, 0, 0);
+}
+
+// 1=Lun..7=Dom -> JS 0=Dom..6=Sab
+function ourDowToJs(our: number) {
+  return our === 7 ? 0 : our;
+}
+
+/**
+ * Normaliza a:
+ * xx.xxx.xxx-x
+ * xx.xxx.xxx-K
+ */
+function normalizeRut(rut: string | null | undefined): string {
+  if (!rut) return "";
+
+  let clean = rut
+    .toString()
+    .trim()
+    .replace(/\./g, "")
+    .replace(/\s+/g, "")
+    .toUpperCase();
+
+  if (!clean) return "";
+
+  if (!clean.includes("-")) {
+    if (clean.length < 2) return "";
+    const body = clean.slice(0, -1);
+    const dv = clean.slice(-1);
+    clean = `${body}-${dv}`;
+  }
+
+  let [body, dv] = clean.split("-");
+
+  body = (body ?? "").replace(/\D/g, "");
+  dv = (dv ?? "").replace(/[^0-9K]/g, "").toUpperCase();
+
+  if (!body || !dv) return "";
+
+  const bodyFormatted = body.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+
+  return `${bodyFormatted}-${dv}`;
+}
+
+// calcula próxima fecha de vencimiento según plantilla
+function getNextDueDate(
+  tpl: {
+    frecuencia: FrecuenciaTarea | string;
+    diaMesVencimiento: number | null;
+    diaSemanaVencimiento: number | null;
+  },
+  today: Date
+): Date | null {
+  if (tpl.frecuencia === FrecuenciaTarea.MENSUAL && tpl.diaMesVencimiento) {
+    const day = clampDayToMonth(
       today.getFullYear(),
       today.getMonth() + 1,
-      day,
-      9,
-      0,
-      0,
-      0
+      tpl.diaMesVencimiento
     );
-  }
 
-  if (tpl.frecuencia === "SEMANAL" && tpl.diaSemanaVencimiento) {
-    const targetDow = tpl.diaSemanaVencimiento as number; // 1-7
-    const base = new Date(today);
-    base.setHours(9, 0, 0, 0);
+    const thisMonthDue = buildDate(today.getFullYear(), today.getMonth() + 1, day);
 
-    // día de la semana actual, 1-7
-    const todayDow = base.getDay() || 7;
-
-    const diff = targetDow - todayDow;
-    if (diff >= 0) {
-      base.setDate(base.getDate() + diff);
-      return base;
-    } else {
-      // semana siguiente
-      base.setDate(base.getDate() + 7 + diff);
-      return base;
+    if (thisMonthDue >= atSafeHour(today)) {
+      return thisMonthDue;
     }
+
+    const nextMonth = new Date(today.getFullYear(), today.getMonth() + 1, 1);
+    const nextYear = nextMonth.getFullYear();
+    const nextMonth1to12 = nextMonth.getMonth() + 1;
+    const nextDay = clampDayToMonth(nextYear, nextMonth1to12, tpl.diaMesVencimiento);
+
+    return buildDate(nextYear, nextMonth1to12, nextDay);
   }
 
-  if (tpl.frecuencia === "UNICA") {
-    // En tu lógica actual, UNICA no crea nada automático
-    // (si quieres, luego lo cambiamos para que cree una sola vez).
+  if (tpl.frecuencia === FrecuenciaTarea.SEMANAL && tpl.diaSemanaVencimiento) {
+    const targetDow = Number(tpl.diaSemanaVencimiento); // 1..7
+    const jsTarget = ourDowToJs(targetDow);
+
+    const base = atSafeHour(today);
+    const todayJsDow = base.getDay(); // 0..6
+
+    const diff = (jsTarget - todayJsDow + 7) % 7;
+    base.setDate(base.getDate() + diff);
+
+    return atSafeHour(base);
+  }
+
+  if (tpl.frecuencia === FrecuenciaTarea.UNICA) {
     return null;
   }
 
   return null;
 }
 
+type GenerarTareasOpts = {
+  onlyArea?: Area;
+};
+
 export async function generarTareasAutomaticas(
-  fechaReferencia: Date = new Date()
+  fechaReferencia: Date = new Date(),
+  opts?: GenerarTareasOpts
 ) {
-  // 1) Plantillas activas
+  const onlyArea = opts?.onlyArea ?? Area.CONTA;
+
+  // 1) Plantillas activas CLIENTE del área
   const plantillas = await prisma.tareaPlantilla.findMany({
-    where: { activo: true },
+    where: {
+      activo: true,
+      presentacion: Presentacion.CLIENTE,
+      area: onlyArea,
+      isVolatile: false,
+      frecuencia: {
+        in: [FrecuenciaTarea.MENSUAL, FrecuenciaTarea.SEMANAL],
+      },
+    },
     select: {
       id_tarea_plantilla: true,
       area: true,
@@ -102,25 +173,64 @@ export async function generarTareasAutomaticas(
       diaSemanaVencimiento: true,
       responsableDefaultId: true,
       nombre: true,
+      presentacion: true,
+      isVolatile: true,
+    },
+    orderBy: { id_tarea_plantilla: "asc" },
+  });
+
+  // 2) Clientes activos del área
+  const clientes = await prisma.cliente.findMany({
+    where: {
+      activo: true,
+      codigoCartera: { startsWith: `${onlyArea}/` },
+    },
+    select: {
+      rut: true,
+      agenteId: true,
+      codigoCartera: true,
+    },
+    orderBy: [{ rut: "asc" }],
+  });
+
+  const clientesNormalizados = clientes
+    .map((c) => ({
+      rutCliente: normalizeRut(c.rut),
+      trabajadorId:
+        typeof c.agenteId === "number" ? c.agenteId : null,
+    }))
+    .filter((c) => c.rutCliente);
+
+  const rutList = clientesNormalizados.map((c) => c.rutCliente);
+  const plantillaIds = plantillas.map((p) => p.id_tarea_plantilla);
+
+  // 3) Exclusiones activas
+  const exclusiones = await prisma.clienteTareaExclusion.findMany({
+    where: {
+      rutCliente: { in: rutList },
+      tareaPlantillaId: { in: plantillaIds },
+      activa: true,
+    },
+    select: {
+      rutCliente: true,
+      tareaPlantillaId: true,
+      desdeFecha: true,
     },
   });
 
-  // 2) Trabajadores activos agrupados por áreaInterna
-  const allWorkers = await prisma.trabajador.findMany({
-    where: { status: true, areaInterna: { not: null } },
-    select: { id_trabajador: true, areaInterna: true },
-  });
-
-  const workersByArea: Partial<Record<Area, number[]>> = {};
-  for (const w of allWorkers) {
-    if (!w.areaInterna) continue;
-    if (!workersByArea[w.areaInterna]) {
-      workersByArea[w.areaInterna] = [];
-    }
-    workersByArea[w.areaInterna]!.push(w.id_trabajador);
+  const exclMap = new Map<string, Date | null>();
+  for (const e of exclusiones) {
+    exclMap.set(
+      `${normalizeRut(e.rutCliente)}|${e.tareaPlantillaId}`,
+      e.desdeFecha ? atSafeHour(e.desdeFecha) : null
+    );
   }
 
-  // 3) Por cada plantilla...
+  let totalCandidatas = 0;
+  let totalInsertadas = 0;
+  let totalSaltadas = 0;
+
+  // 4) Por cada plantilla...
   for (const tpl of plantillas) {
     const dueDate = getNextDueDate(
       {
@@ -130,72 +240,108 @@ export async function generarTareasAutomaticas(
       },
       fechaReferencia
     );
+
     if (!dueDate) continue;
 
-    // Rango del período (para no duplicar dentro del mismo mes/semana)
+    const fechaObjetivo = atSafeHour(dueDate);
+
+    // Rango del período para deduplicar
     let startPeriod: Date;
     let endPeriod: Date;
 
     if (tpl.frecuencia === FrecuenciaTarea.MENSUAL) {
-      startPeriod = startOfMonth(dueDate);
-      endPeriod = startOfNextMonth(dueDate);
-    } else if (tpl.frecuencia === FrecuenciaTarea.SEMANAL) {
-      startPeriod = startOfWeek(dueDate);
-      endPeriod = startOfNextWeek(dueDate);
+      startPeriod = startOfMonth(fechaObjetivo);
+      endPeriod = startOfNextMonth(fechaObjetivo);
     } else {
-      // UNICA u otra → usamos rango muy amplio
-      startPeriod = new Date(2000, 0, 1);
-      endPeriod = new Date(2100, 0, 1);
+      startPeriod = startOfWeek(fechaObjetivo);
+      endPeriod = startOfNextWeek(fechaObjetivo);
     }
 
-    // 4) Determinar para QUÉ trabajadores crear tareas
+    // Existentes para esta plantilla en el período
+    const existentes = await prisma.tareaAsignada.findMany({
+      where: {
+        tareaPlantillaId: tpl.id_tarea_plantilla,
+        fechaProgramada: {
+          gte: startPeriod,
+          lt: endPeriod,
+        },
+        rutCliente: { in: rutList },
+      },
+      select: {
+        rutCliente: true,
+        fechaProgramada: true,
+      },
+    });
 
-    let workerIds: number[] = [];
+    const existentesSet = new Set(
+      existentes.map((e) => {
+        const rut = normalizeRut(e.rutCliente);
+        return `${rut}|${atSafeHour(e.fechaProgramada).toISOString()}`;
+      })
+    );
 
-    if (tpl.responsableDefaultId) {
-      // Tarea que pertenece a un responsable específico
-      workerIds = [tpl.responsableDefaultId];
-    } else if (tpl.area && workersByArea[tpl.area]?.length) {
-      // Tarea "del área": se crea una por cada trabajador del área
-      workerIds = workersByArea[tpl.area]!;
-    } else {
-      // Sin área ni responsable: opcionalmente podrías crear una sin asignar
-      workerIds = [];
+    const toCreate: {
+      tareaPlantillaId: number;
+      trabajadorId: number | null;
+      estado: EstadoTarea;
+      fechaProgramada: Date;
+      rutCliente: string;
+      comentarios?: string | null;
+    }[] = [];
+
+    // 5) Crear por cliente, no por trabajador del área
+    for (const cli of clientesNormalizados) {
+      const exKey = `${cli.rutCliente}|${tpl.id_tarea_plantilla}`;
+      const desdeFecha = exclMap.get(exKey) ?? null;
+
+      if (desdeFecha && desdeFecha <= fechaObjetivo) {
+        totalSaltadas++;
+        continue;
+      }
+
+      const dedupeKey = `${cli.rutCliente}|${fechaObjetivo.toISOString()}`;
+      if (existentesSet.has(dedupeKey)) {
+        totalSaltadas++;
+        continue;
+      }
+
+      existentesSet.add(dedupeKey);
+      totalCandidatas++;
+
+      toCreate.push({
+        tareaPlantillaId: tpl.id_tarea_plantilla,
+        fechaProgramada: fechaObjetivo,
+        trabajadorId: cli.trabajadorId ?? tpl.responsableDefaultId ?? null,
+        estado: EstadoTarea.PENDIENTE,
+        rutCliente: cli.rutCliente,
+        comentarios: "Generada automáticamente",
+      });
     }
 
-    // 5) Para cada trabajador, crear SOLO si no tiene aún esa tarea en el período
-    for (const workerId of workerIds) {
-      const yaExiste = await prisma.tareaAsignada.findFirst({
-        where: {
-          tareaPlantillaId: tpl.id_tarea_plantilla,
-          trabajadorId: workerId,
-          fechaProgramada: {
-            gte: startPeriod,
-            lt: endPeriod,
-          },
-        },
+    if (toCreate.length > 0) {
+      const result = await prisma.tareaAsignada.createMany({
+        data: toCreate,
+        skipDuplicates: true,
       });
 
-      if (yaExiste) continue;
-
-      await prisma.tareaAsignada.create({
-        data: {
-          tareaPlantillaId: tpl.id_tarea_plantilla,
-          fechaProgramada: dueDate,
-          trabajadorId: workerId,
-          estado: EstadoTarea.PENDIENTE,
-        },
-      });
+      totalInsertadas += result.count;
 
       console.log(
-        `Creada tarea "${tpl.nombre}" para plantilla ${tpl.id_tarea_plantilla} ` +
-          `para trabajador ${workerId} con fecha ${dueDate
-            .toISOString()
-            .slice(0, 10)}`
+        `[generarTareas] plantilla=${tpl.id_tarea_plantilla} "${tpl.nombre}" ` +
+          `candidatas=${toCreate.length} insertadas=${result.count} ` +
+          `fecha=${fechaObjetivo.toISOString().slice(0, 10)}`
       );
     }
-
-    // Si quisieras además crear UNA tarea sin asignar cuando no hay área ni responsable,
-    // aquí podrías hacerlo comprobando trabajadorId = null de forma similar.
   }
+
+  return {
+    ran: true,
+    area: onlyArea,
+    today: atSafeHour(fechaReferencia).toISOString(),
+    totalPlantillas: plantillas.length,
+    totalClientes: clientesNormalizados.length,
+    candidates: totalCandidatas,
+    inserted: totalInsertadas,
+    skippedApprox: totalSaltadas + Math.max(0, totalCandidatas - totalInsertadas),
+  };
 }
