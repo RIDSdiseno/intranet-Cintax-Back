@@ -8,36 +8,27 @@ datasource db {
 }
 
 model Trabajador {
-  id_trabajador      Int              @id @default(autoincrement())
+  id_trabajador      Int               @id @default(autoincrement())
   nombre             String
-  email              String           @unique
+  email              String            @unique
   passwordHash       String?
-  googleId           String?          @unique
-  status             Boolean          @default(true)
-  createdAt          DateTime         @default(now())
+  googleId           String?           @unique
+  status             Boolean           @default(true)
+  createdAt          DateTime          @default(now())
   googleRefreshToken String?
   areaInterna        Area?
   lastActivityAt     DateTime?
   tipoRelacion       TipoRelacion?
-  carpetaDriveCodigo String?          @db.VarChar(50)
-
-  // ✅ NUEVO (ADITIVO): supervisor (para permisos de lectura de bitácoras)
-  isSupervisor       Boolean          @default(false)
-
-  refreshTokens      RefreshToken[]
-  tareasAsignadas    TareaAsignada[]  @relation("TrabajadorTareas")
-  tareasDefault      TareaPlantilla[] @relation("TareaResponsableDefault")
-  tickets            Ticket[]
-  ticketMessages     TicketMessage[]  @relation("TicketMessageAuthor")
-
-  // ✅ NUEVO (ADITIVO, seguro en producción)
-  ticketEvents       TicketEvent[]    @relation("TicketEventActor")
-
-  // ✅ Bitácoras diarias
-  bitacoras          BitacoraDiaria[]
-
-  // ✅ NUEVO: bitácoras por cliente
+  carpetaDriveCodigo String?           @db.VarChar(50)
+  isSupervisor       Boolean           @default(false)
   clienteBitacoras   BitacoraCliente[]
+  bitacoras          BitacoraDiaria[]
+  refreshTokens      RefreshToken[]
+  tareasAsignadas    TareaAsignada[]   @relation("TrabajadorTareas")
+  tareasDefault      TareaPlantilla[]  @relation("TareaResponsableDefault")
+  tickets            Ticket[]
+  ticketEvents       TicketEvent[]     @relation("TicketEventActor")
+  ticketMessages     TicketMessage[]   @relation("TicketMessageAuthor")
 }
 
 model RefreshToken {
@@ -50,29 +41,23 @@ model RefreshToken {
 }
 
 model Ticket {
-  id_ticket      Int          @id @default(autoincrement())
+  id_ticket      Int             @id @default(autoincrement())
   subject        String
   description    String
   categoria      String
   estado         String
   prioridad      Int?
   requesterEmail String
-
-  freshdeskId    Int?         @unique
   trabajadorId   Int?
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
-
-  gmailThreadId  String?      @unique
-  source         TicketSource @default(MANUAL)
-
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  gmailThreadId  String?         @unique
+  source         TicketSource    @default(MANUAL)
+  freshdeskId    Int?            @unique
   areaAsignada   Area?
-
   trabajador     Trabajador?     @relation(fields: [trabajadorId], references: [id_trabajador])
-  messages       TicketMessage[] @relation("TicketMessages")
-
-  // ✅ NUEVO (ADITIVO, seguro en producción)
   events         TicketEvent[]
+  messages       TicketMessage[] @relation("TicketMessages")
 
   @@index([createdAt])
   @@index([estado])
@@ -86,9 +71,7 @@ model TicketMessage {
   authorTrabajadorId Int?
   type               TicketMessageType
   direction          TicketMessageDirection @default(INBOUND)
-
   gmailMessageId     String?                @unique
-
   toEmail            String?
   cc                 String?
   bcc                String?
@@ -96,11 +79,9 @@ model TicketMessage {
   bodyHtml           String
   bodyText           String?
   createdAt          DateTime               @default(now())
-
-  ticket             Ticket                 @relation("TicketMessages", fields: [ticketId], references: [id_ticket], onDelete: Cascade)
-  author             Trabajador?            @relation("TicketMessageAuthor", fields: [authorTrabajadorId], references: [id_trabajador], onDelete: SetNull)
-
   attachments        TicketAttachment[]
+  author             Trabajador?            @relation("TicketMessageAuthor", fields: [authorTrabajadorId], references: [id_trabajador])
+  ticket             Ticket                 @relation("TicketMessages", fields: [ticketId], references: [id_ticket], onDelete: Cascade)
 
   @@index([ticketId, createdAt])
   @@index([authorTrabajadorId])
@@ -114,13 +95,11 @@ model TicketAttachment {
   size      Int
   url       String
   createdAt DateTime      @default(now())
-
   message   TicketMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
 
   @@index([messageId])
 }
 
-// ✅ NUEVO (ADITIVO, seguro en producción)
 model TicketEvent {
   id                Int         @id @default(autoincrement())
   ticketId          Int
@@ -128,9 +107,8 @@ model TicketEvent {
   meta              Json?
   actorTrabajadorId Int?
   createdAt         DateTime    @default(now())
-
+  actor             Trabajador? @relation("TicketEventActor", fields: [actorTrabajadorId], references: [id_trabajador])
   ticket            Ticket      @relation(fields: [ticketId], references: [id_ticket], onDelete: Cascade)
-  actor             Trabajador? @relation("TicketEventActor", fields: [actorTrabajadorId], references: [id_trabajador], onDelete: SetNull)
 
   @@index([ticketId, createdAt])
   @@index([actorTrabajadorId])
@@ -140,14 +118,6 @@ model TareaPlantilla {
   id_tarea_plantilla   Int             @id @default(autoincrement())
   area                 Area
   nombre               String
-
-  // sigue siendo único
-  nombreNorm           String          @unique
-
-  // NUEVO: “clave base” para buscar por nombre lógico cuando la plantilla es volátil
-  // Ej base: "declaracion iva"
-  nombreBaseNorm       String?         @db.VarChar(255)
-
   detalle              String
   frecuenciaTexto      String?
   plazoMaximoTexto     String?
@@ -159,19 +129,16 @@ model TareaPlantilla {
   responsableDefaultId Int?
   codigoDocumento      String?
   requiereDrive        Boolean         @default(true)
-
-  // NUEVO: volatilidad
-  isVolatile           Boolean         @default(false)
-  expiresAt            DateTime?
+  nombreNorm           String          @unique
   createdAt            DateTime        @default(now())
-
+  expiresAt            DateTime?
+  isVolatile           Boolean         @default(false)
+  nombreBaseNorm       String?         @db.VarChar(255)
   tareasAsignadas      TareaAsignada[]
   responsableDefault   Trabajador?     @relation("TareaResponsableDefault", fields: [responsableDefaultId], references: [id_trabajador])
 
   @@index([area])
   @@index([responsableDefaultId])
-
-  // para resolver volátiles rápido
   @@index([nombreBaseNorm])
   @@index([isVolatile, expiresAt])
 }
@@ -188,19 +155,14 @@ model TareaAsignada {
   updatedAt          DateTime       @updatedAt
   rutCliente         String?
   driveTareaFolderId String?        @db.VarChar(255)
-
+  notificaciones     Notificacion[] @relation("NotificacionTarea")
   tareaPlantilla     TareaPlantilla @relation(fields: [tareaPlantillaId], references: [id_tarea_plantilla])
   asignado           Trabajador?    @relation("TrabajadorTareas", fields: [trabajadorId], references: [id_trabajador])
 
-  notificaciones     Notificacion[] @relation("NotificacionTarea")
-
+  @@unique([rutCliente, tareaPlantillaId, fechaProgramada])
   @@index([trabajadorId])
   @@index([rutCliente])
   @@index([tareaPlantillaId])
-
-  // ✅ NUEVO: evita repetir tareas programadas para el mismo cliente y plantilla en la misma fecha
-  // Ojo: como rutCliente es nullable, los NULL no chocan entre sí (comportamiento Postgres).
-  @@unique([rutCliente, tareaPlantillaId, fechaProgramada])
 }
 
 model Cliente {
@@ -213,8 +175,6 @@ model Cliente {
   updatedAt     DateTime          @updatedAt
   agenteId      Int?
   codigoCartera String?
-
-  // ✅ NUEVO: historial de bitácoras del cliente
   bitacoras     BitacoraCliente[]
 
   @@index([agenteId])
@@ -222,14 +182,13 @@ model Cliente {
 }
 
 model Notificacion {
-  id           Int      @id @default(autoincrement())
   mensaje      String
-  leida        Boolean  @default(false)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  leida        Boolean       @default(false)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
   trabajadorId Int
   tareaId      Int
-
+  id           Int           @id @default(autoincrement())
   tarea        TareaAsignada @relation("NotificacionTarea", fields: [tareaId], references: [id_tarea_asignada])
 
   @@index([tareaId])
@@ -251,41 +210,30 @@ model ClienteTareaExclusion {
   @@index([tareaPlantillaId])
 }
 
-// ✅ Bitácoras diarias
 model BitacoraDiaria {
   id           Int        @id @default(autoincrement())
   trabajadorId Int
-
-  // “día” de la bitácora (recomendado normalizar a 00:00 al guardar)
   fecha        DateTime
-
   titulo       String?
   contenido    String
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
-
   trabajador   Trabajador @relation(fields: [trabajadorId], references: [id_trabajador], onDelete: Cascade)
 
-  // ✅ una bitácora por día por trabajador (si guardas fecha normalizada)
   @@unique([trabajadorId, fecha])
   @@index([fecha])
   @@index([trabajadorId, fecha])
 }
 
-// ✅ NUEVO: Bitácora por cliente
 model BitacoraCliente {
   id           Int        @id @default(autoincrement())
   clienteId    Int
   trabajadorId Int
-
-  // fecha asociada a la gestión realizada
   fechaGestion DateTime
-
   titulo       String?
   contenido    String
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
-
   cliente      Cliente    @relation(fields: [clienteId], references: [id], onDelete: Cascade)
   trabajador   Trabajador @relation(fields: [trabajadorId], references: [id_trabajador], onDelete: Cascade)
 
@@ -294,6 +242,62 @@ model BitacoraCliente {
   @@index([fechaGestion])
   @@index([clienteId, fechaGestion])
   @@index([clienteId, createdAt])
+}
+
+/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
+model TareaAsignada_backup_duplicados_null_cliente_20260408 {
+  id_tarea_asignada  Int?
+  tareaPlantillaId   Int?
+  trabajadorId       Int?
+  estado             EstadoTarea?
+  fechaProgramada    DateTime?
+  fechaComplecion    DateTime?
+  comentarios        String?
+  createdAt          DateTime?
+  updatedAt          DateTime?
+  rutCliente         String?
+  driveTareaFolderId String?      @db.VarChar(255)
+  rn                 BigInt?
+
+  @@ignore
+}
+
+/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
+model TareaAsignada_backup_duplicados_rut_formato_20260408 {
+  id_tarea_asignada  Int?
+  tareaPlantillaId   Int?
+  trabajadorId       Int?
+  estado             EstadoTarea?
+  fechaProgramada    DateTime?
+  fechaComplecion    DateTime?
+  comentarios        String?
+  createdAt          DateTime?
+  updatedAt          DateTime?
+  rutCliente         String?
+  driveTareaFolderId String?      @db.VarChar(255)
+  rut_normalizado    String?
+  rn                 BigInt?
+
+  @@ignore
+}
+
+/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
+model TareaAsignada_backup_duplicados_rut_formato_20260409 {
+  id_tarea_asignada  Int?
+  tareaPlantillaId   Int?
+  trabajadorId       Int?
+  estado             EstadoTarea?
+  fechaProgramada    DateTime?
+  fechaComplecion    DateTime?
+  comentarios        String?
+  createdAt          DateTime?
+  updatedAt          DateTime?
+  rutCliente         String?
+  driveTareaFolderId String?      @db.VarChar(255)
+  rut_normalizado    String?
+  rn                 BigInt?
+
+  @@ignore
 }
 
 enum TipoRelacion {

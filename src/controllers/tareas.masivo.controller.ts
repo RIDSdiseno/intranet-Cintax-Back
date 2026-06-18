@@ -167,19 +167,14 @@ export async function crearDesdePlantillaMasivoSafe(req: Request, res: Response)
     const tId = Number((body as any).trabajadorId);
     const fecha = asFlexibleDate((body as any).fechaProgramada);
 
-    const skipDuplicates = String((body as any).skipDuplicates ?? "true").toLowerCase() !== "false";
-
     const debug = {
       got: {
-        rutClientesType: Array.isArray((body as any).rutClientes) ? "array" : typeof (body as any).rutClientes,
         rutClientesLen: ruts.length,
-        plantillaIdsType: Array.isArray((body as any).plantillaIds) ? "array" : typeof (body as any).plantillaIds,
         plantillaIdsLen: plantillas.length,
         trabajadorIdRaw: (body as any).trabajadorId,
         trabajadorIdNum: tId,
         fechaProgramadaRaw: (body as any).fechaProgramada,
         fechaProgramadaParsed: fecha ? fecha.toISOString() : null,
-        skipDuplicates,
       },
     };
 
@@ -192,91 +187,72 @@ export async function crearDesdePlantillaMasivoSafe(req: Request, res: Response)
       where: { id_trabajador: tId },
       select: { id_trabajador: true, nombre: true, email: true },
     });
-    if (!trabajador) return res.status(404).json({ error: "Trabajador no existe", ...debug });
+
+    if (!trabajador) {
+      return res.status(404).json({ error: "Trabajador no existe", ...debug });
+    }
 
     const plantillasFound = await prisma.tareaPlantilla.findMany({
       where: { id_tarea_plantilla: { in: plantillas } },
-      select: { id_tarea_plantilla: true, nombre: true },
+      select: { id_tarea_plantilla: true },
     });
 
-    const validPlantillaIds = new Set(plantillasFound.map((p) => p.id_tarea_plantilla));
+    const validPlantillaIds = new Set(
+      plantillasFound.map((p) => p.id_tarea_plantilla)
+    );
+
     const missing = plantillas.filter((id) => !validPlantillaIds.has(id));
-    if (missing.length) return res.status(400).json({ error: "Hay plantillas inválidas", missing, ...debug });
 
-    const OPEN_STATES: EstadoTarea[] = [
-      EstadoTarea.PENDIENTE,
-      EstadoTarea.EN_PROCESO,
-      EstadoTarea.VENCIDA,
-    ];
-
-    const requestedPairs = ruts.length * plantillas.length;
-
-    const existingOpen = await prisma.tareaAsignada.findMany({
-      where: {
-        rutCliente: { in: ruts },
-        tareaPlantillaId: { in: plantillas },
-        estado: { in: OPEN_STATES },
-      },
-      select: {
-        rutCliente: true,
-        tareaPlantillaId: true,
-      },
-    });
-
-    const openKey = new Set<string>();
-    for (const e of existingOpen) {
-      if (!e.rutCliente) continue;
-      openKey.add(`${e.rutCliente}::${e.tareaPlantillaId}`);
+    if (missing.length) {
+      return res.status(400).json({
+        error: "Hay plantillas inválidas",
+        missing,
+        ...debug,
+      });
     }
 
-    const updateResult = await prisma.tareaAsignada.updateMany({
-      where: {
-        rutCliente: { in: ruts },
-        tareaPlantillaId: { in: plantillas },
-        estado: { in: OPEN_STATES },
-      },
-      data: {
-        fechaProgramada: fecha,
-        trabajadorId: tId,
-      },
-    });
-
-    const updatedCount = updateResult.count;
-
-    const createData: Array<{
-      tareaPlantillaId: number;
-      rutCliente: string;
-      trabajadorId: number;
-      estado: EstadoTarea;
-      fechaProgramada: Date;
-    }> = [];
+    let creadas = 0;
+    let actualizadas = 0;
+    let omitidas = 0;
 
     for (const rut of ruts) {
       for (const pid of plantillas) {
-        if (openKey.has(`${rut}::${pid}`)) continue;
-        createData.push({
-          tareaPlantillaId: pid,
-          rutCliente: rut,
-          trabajadorId: tId,
-          estado: EstadoTarea.PENDIENTE,
-          fechaProgramada: fecha,
+        const result = await prisma.tareaAsignada.upsert({
+          where: {
+            rutCliente_tareaPlantillaId_fechaProgramada: {
+              rutCliente: rut,
+              tareaPlantillaId: pid,
+              fechaProgramada: fecha,
+            },
+          },
+          update: {
+            trabajadorId: tId,
+            estado: EstadoTarea.PENDIENTE,
+          },
+          create: {
+            rutCliente: rut,
+            tareaPlantillaId: pid,
+            trabajadorId: tId,
+            estado: EstadoTarea.PENDIENTE,
+            fechaProgramada: fecha,
+          },
         });
+
+        if (result.createdAt.getTime() === result.updatedAt.getTime()) {
+          creadas++;
+        } else {
+          actualizadas++;
+        }
       }
     }
-
-    const created = createData.length
-      ? await prisma.tareaAsignada.createMany({
-          data: createData,
-          skipDuplicates,
-        })
-      : { count: 0 };
 
     return res.json({
       mensaje: "Tareas procesadas correctamente",
       resumen: {
-        total_pares: requestedPairs,
-        tareas_reprogramadas: updatedCount,
-        tareas_creadas: created.count,
+        total_pares: ruts.length * plantillas.length,
+        tareas_creadas: creadas,
+        tareas_actualizadas: actualizadas,
+        tareas_omitidas: omitidas,
       },
       responsable: trabajador.nombre,
       fecha_programada: fecha.toISOString().split("T")[0],
@@ -284,7 +260,9 @@ export async function crearDesdePlantillaMasivoSafe(req: Request, res: Response)
     });
   } catch (e) {
     console.error("crearDesdePlantillaMasivoSafe error:", e);
-    return res.status(500).json({ error: "Error interno procesando tareas masivas (SAFE)" });
+    return res.status(500).json({
+      error: "Error interno procesando tareas masivas (SAFE)",
+    });
   }
 }
 
