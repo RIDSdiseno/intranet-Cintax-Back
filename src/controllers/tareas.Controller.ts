@@ -127,8 +127,9 @@ export const getTareasPorRut = async (req: AuthRequest, res: Response) => {
         return res.status(400).json({ message: "anio/mes inválidos. Ej: ?anio=2025&mes=12" });
       }
 
-      const inicio = new Date(year, month - 1, 1);
-      const fin = new Date(year, month, 1);
+      // Usar UTC para ser consistente con fechas almacenadas como UTC midnight
+      const inicio = new Date(Date.UTC(year, month - 1, 1));
+      const fin = new Date(Date.UTC(year, month, 1));
       fechaFiltro = { gte: inicio, lt: fin };
     }
 
@@ -324,8 +325,9 @@ export const getTareasPorPlantilla = async (req: AuthRequest, res: Response) => 
         return res.status(400).json({ message: "anio/mes inválidos. Ejemplo: ?anio=2025&mes=1" });
       }
 
-      const inicio = new Date(year, month - 1, 1);
-      const fin = new Date(year, month, 1);
+      // Usar UTC para ser consistente con fechas almacenadas como UTC midnight
+      const inicio = new Date(Date.UTC(year, month - 1, 1));
+      const fin = new Date(Date.UTC(year, month, 1));
       fechaFiltro = { gte: inicio, lt: fin };
     }
 
@@ -1116,8 +1118,9 @@ export const getTareasPorRuts = async (req: AuthRequest, res: Response) => {
         return res.status(400).json({ message: "anio/mes inválidos. Ej: { anio: 2025, mes: 12 }" });
       }
 
-      const inicio = new Date(year, month - 1, 1);
-      const fin = new Date(year, month, 1);
+      // Usar UTC para ser consistente con fechas almacenadas como UTC midnight
+      const inicio = new Date(Date.UTC(year, month - 1, 1));
+      const fin = new Date(Date.UTC(year, month, 1));
       fechaFiltro = { gte: inicio, lt: fin };
     }
 
@@ -1315,8 +1318,9 @@ export const getTareasDesactivadas = async (req: AuthRequest, res: Response) => 
         });
       }
 
-      const inicio = new Date(year, month - 1, 1);
-      const fin = new Date(year, month, 1);
+      // Usar UTC para ser consistente con fechas almacenadas como UTC midnight
+      const inicio = new Date(Date.UTC(year, month - 1, 1));
+      const fin = new Date(Date.UTC(year, month, 1));
       fechaFiltro = { gte: inicio, lt: fin };
     }
 
