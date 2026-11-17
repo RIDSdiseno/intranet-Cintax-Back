@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.setClienteActivo = exports.deleteCliente = exports.bulkAssignAgente = exports.assignAgenteToCliente = exports.updateCliente = exports.createCliente = exports.getClienteById = exports.listClientes = void 0;
 const client_1 = require("@prisma/client");
+const client_2 = require("@prisma/client");
 const prisma = new client_1.PrismaClient();
 /**
  * Helpers
@@ -22,7 +23,6 @@ function isAdmin(req) {
     return role === "ADMIN";
 }
 async function ensureAgenteExists(agenteId) {
-    // Ajusta el modelo si no se llama "trabajador"
     const agente = await prisma.trabajador.findUnique({
         where: { id_trabajador: agenteId },
         select: { id_trabajador: true, nombre: true, email: true, status: true },
@@ -58,6 +58,41 @@ function parseNullableNumber(v) {
     return n;
 }
 /**
+ * Normaliza codigoCartera para evitar inconsistencias tipo CONTA/012.
+ * Reglas:
+ * - trim + upper
+ * - AREA/012   -> AREA/A12
+ * - AREA/A1    -> AREA/A01
+ * - AREA/A01   -> AREA/A01 (ok)
+ */
+function normalizeCodigoCartera(input) {
+    const v = (input ?? "").trim().toUpperCase();
+    if (!v)
+        return null;
+    // AREA/012 -> AREA/A12 (pad 2)
+    const m = v.match(/^([A-Z]+)\/0*([0-9]+)$/);
+    if (m) {
+        const area = m[1];
+        const num = String(parseInt(m[2], 10)).padStart(2, "0");
+        return `${area}/A${num}`;
+    }
+    // AREA/A1 -> AREA/A01
+    const m2 = v.match(/^([A-Z]+)\/A([0-9]{1})$/);
+    if (m2)
+        return `${m2[1]}/A0${m2[2]}`;
+    return v;
+}
+/**
+ * Obtiene codigoCartera automáticamente desde el agente (trabajador.carpetaDriveCodigo)
+ */
+async function getCodigoCarteraFromAgente(agenteId) {
+    const agente = await prisma.trabajador.findUnique({
+        where: { id_trabajador: agenteId },
+        select: { carpetaDriveCodigo: true },
+    });
+    return normalizeCodigoCartera(agente?.carpetaDriveCodigo ?? null);
+}
+/**
  * GET /api/clientes
  *
  * Query params:
@@ -74,8 +109,9 @@ const listClientes = async (req, res) => {
         const where = {};
         if (soloActivos === "true")
             where.activo = true;
+        // acepta cartera con normalización (por si alguien manda CONTA/012, lo normaliza)
         if (cartera && cartera.trim() !== "")
-            where.codigoCartera = cartera.trim();
+            where.codigoCartera = normalizeCodigoCartera(cartera);
         if (agenteId) {
             const parsed = Number(agenteId);
             if (!Number.isNaN(parsed))
@@ -153,10 +189,11 @@ const getClienteById = async (req, res) => {
 exports.getClienteById = getClienteById;
 /**
  * POST /api/clientes
- * body: { rut, razonSocial, alias?, codigoCartera?, agenteId?, activo? }
+ * body: { rut, razonSocial, alias?, agenteId?, activo? }
  *
- * ✅ Regla sugerida:
- * - ADMIN / SUPERVISOR: puede crear y asignar agenteId
+ * ✅ Regla:
+ * - El cliente NO debe mandar codigoCartera.
+ * - Si viene agenteId, el backend asigna codigoCartera automáticamente desde trabajador.carpetaDriveCodigo.
  */
 const createCliente = async (req, res) => {
     try {
@@ -183,15 +220,18 @@ const createCliente = async (req, res) => {
         const exists = await prisma.cliente.findFirst({ where: { rut } });
         if (exists)
             return res.status(409).json({ error: "Ya existe un cliente con ese RUT" });
+        // ✅ codigoCartera automático desde el agente (si hay agenteId)
+        const codigoCartera = agenteId !== null ? await getCodigoCarteraFromAgente(agenteId) : null;
         const created = await prisma.cliente.create({
             data: {
                 rut,
                 razonSocial,
                 alias: body.alias ?? null,
-                codigoCartera: body.codigoCartera ?? null,
+                codigoCartera, // 👈 automático (no viene del cliente)
                 agenteId,
                 activo: body.activo ?? true,
             },
+            // ⚠️ Mantener SOLO campos escalares para no tocar tablas/relaciones inexistentes como AgenteCartera
             select: {
                 id: true,
                 rut: true,
@@ -221,25 +261,26 @@ exports.createCliente = createCliente;
  *
  * ✅ Permisos:
  * - ADMIN/SUPERVISOR: puede editar todo (incluye agenteId)
- * - AGENTE: puede editar SOLO alias / codigoCartera (si quieres) y NO puede tocar agenteId ni activo.
+ * - AGENTE: puede editar SOLO alias (y opcionalmente codigoCartera si tú quieres)
  *
- * Ajusta la whitelist según tu regla real.
+ * ✅ Regla nueva:
+ * - Si admin/supervisor cambia agenteId, recalculamos codigoCartera automáticamente desde el agente.
+ * - Si es AGENTE, por defecto NO permitimos cambiar codigoCartera para no ensuciar data (puedes habilitarlo si quieres).
  */
 const updateCliente = async (req, res) => {
     try {
         const id = parseIdParam(req);
         if (!id)
             return res.status(400).json({ error: "ID inválido" });
-        const role = req.user?.role;
         const body = req.body;
+        const isPriv = isPrivileged(req);
         const data = {};
         // ---- Campos "sensibles" (rut/razonSocial/activo/agenteId) ----
         const wantsRut = body.rut !== undefined;
         const wantsRazon = body.razonSocial !== undefined;
         const wantsActivo = body.activo !== undefined;
         const wantsAgenteId = body.agenteId !== undefined;
-        const isPriv = isPrivileged(req);
-        // Si es AGENTE, bloquea cambios sensibles (puedes ajustar esta regla)
+        // Si NO es privilegiado, bloquea cambios sensibles
         if (!isPriv && (wantsRut || wantsRazon || wantsActivo || wantsAgenteId)) {
             return res.status(403).json({
                 error: "Sin permisos para modificar rut/razonSocial/activo/agenteId (solo admin/supervisor)",
@@ -259,29 +300,37 @@ const updateCliente = async (req, res) => {
                 return res.status(400).json({ error: "razonSocial no puede ser vacío" });
             data.razonSocial = rs;
         }
-        // alias / codigoCartera (permitidos para todos por defecto)
+        // alias (permitido para todos)
         const alias = asNullableTrimmedString(body.alias);
         if (alias !== undefined)
             data.alias = alias;
-        const codigoCartera = asNullableTrimmedString(body.codigoCartera);
-        if (codigoCartera !== undefined)
-            data.codigoCartera = codigoCartera;
-        // agenteId (solo priv)
-        if (wantsAgenteId) {
+        // codigoCartera:
+        // - Por defecto: solo admin/supervisor puede setearlo manualmente (idealmente no se usa manual)
+        // - Si quieres permitir a AGENTE editarlo, cambia la condición.
+        const codigoCarteraIncoming = asNullableTrimmedString(body.codigoCartera);
+        if (codigoCarteraIncoming !== undefined) {
             if (!isPriv) {
-                return res.status(403).json({ error: "Sin permisos para reasignar agente" });
+                return res.status(403).json({ error: "Sin permisos para modificar codigoCartera" });
             }
+            data.codigoCartera = normalizeCodigoCartera(codigoCarteraIncoming);
+        }
+        // agenteId (solo priv) + recalculo automático de codigoCartera
+        if (wantsAgenteId) {
+            if (!isPriv)
+                return res.status(403).json({ error: "Sin permisos para reasignar agente" });
             const parsed = parseNullableNumber(body.agenteId);
             if (parsed === NaN)
                 return res.status(400).json({ error: "agenteId inválido" });
             if (parsed === null) {
                 data.agenteId = null;
+                data.codigoCartera = null; // si se desasigna agente, se limpia cartera
             }
             else if (typeof parsed === "number") {
                 const chk = await ensureAgenteExists(parsed);
                 if (!chk.ok)
                     return res.status(400).json({ error: chk.error });
                 data.agenteId = parsed;
+                data.codigoCartera = await getCodigoCarteraFromAgente(parsed); // 👈 automático
             }
         }
         // activo (solo priv)
@@ -329,6 +378,7 @@ exports.updateCliente = updateCliente;
  * body: { agenteId: number | null }
  *
  * ✅ endpoint explícito para reasignar (admin/supervisor)
+ * ✅ Recalcula codigoCartera automáticamente desde trabajador.carpetaDriveCodigo
  */
 const assignAgenteToCliente = async (req, res) => {
     try {
@@ -347,35 +397,78 @@ const assignAgenteToCliente = async (req, res) => {
             if (!chk.ok)
                 return res.status(400).json({ error: chk.error });
         }
-        // Si viene agenteId, tomamos su carpetaDriveCodigo como codigoCartera
-        let codigoCartera = null;
-        if (agenteId !== null && agenteId !== undefined) {
-            const agente = await prisma.trabajador.findUnique({
-                where: { id_trabajador: agenteId },
-                select: { carpetaDriveCodigo: true },
+        const codigoCartera = agenteId !== null && agenteId !== undefined ? await getCodigoCarteraFromAgente(agenteId) : null;
+        // Estados que “deben” moverse al nuevo responsable
+        const OPEN_STATES = [
+            client_2.EstadoTarea.PENDIENTE,
+            client_2.EstadoTarea.EN_PROCESO,
+            client_2.EstadoTarea.VENCIDA,
+        ];
+        const result = await prisma.$transaction(async (tx) => {
+            // 1) Buscar cliente para obtener rut (y validar existencia)
+            const clientePrev = await tx.cliente.findUnique({
+                where: { id },
+                select: {
+                    id: true,
+                    rut: true,
+                    razonSocial: true,
+                    agenteId: true,
+                    codigoCartera: true,
+                    activo: true,
+                },
             });
-            if (!agente)
-                return res.status(400).json({ error: "Agente no encontrado" });
-            codigoCartera = agente.carpetaDriveCodigo ?? null;
+            if (!clientePrev) {
+                // Simula comportamiento Prisma P2025, pero con mensaje claro
+                return null;
+            }
+            // 2) Actualizar cliente (agenteId + codigoCartera)
+            const updated = await tx.cliente.update({
+                where: { id },
+                data: {
+                    agenteId: agenteId ?? null,
+                    codigoCartera,
+                },
+                select: {
+                    id: true,
+                    rut: true,
+                    razonSocial: true,
+                    alias: true,
+                    codigoCartera: true,
+                    agenteId: true,
+                    activo: true,
+                    updatedAt: true,
+                },
+            });
+            // 3) Mover tareas del cliente al nuevo trabajador
+            // Si agenteId es null => no movemos tareas (se mantienen como están).
+            let tareasMovidas = 0;
+            if (agenteId !== null && agenteId !== undefined) {
+                const upd = await tx.tareaAsignada.updateMany({
+                    where: {
+                        rutCliente: updated.rut,
+                        estado: { in: OPEN_STATES },
+                    },
+                    data: {
+                        trabajadorId: agenteId,
+                    },
+                });
+                tareasMovidas = upd.count;
+            }
+            return { updated, tareasMovidas, prevAgenteId: clientePrev.agenteId };
+        });
+        if (!result) {
+            return res.status(404).json({ error: "Cliente no encontrado" });
         }
-        const updated = await prisma.cliente.update({
-            where: { id },
-            data: {
-                agenteId: agenteId ?? null,
-                codigoCartera, // 👈 se asigna automático
-            },
-            select: {
-                id: true,
-                rut: true,
-                razonSocial: true,
-                alias: true,
-                codigoCartera: true,
-                agenteId: true,
-                activo: true,
-                updatedAt: true,
+        // Respuesta “amigable” (y útil para front)
+        return res.json({
+            ok: true,
+            mensaje: "Cliente reasignado correctamente",
+            cliente: result.updated,
+            tareas: {
+                movidas: result.tareasMovidas,
+                criterio: "Se movieron solo tareas abiertas (PENDIENTE/EN_PROCESO/VENCIDA)",
             },
         });
-        return res.json(updated);
     }
     catch (err) {
         console.error("assignAgenteToCliente error:", err);
@@ -390,6 +483,7 @@ exports.assignAgenteToCliente = assignAgenteToCliente;
  * body: { clienteIds: number[], agenteId: number | null }
  *
  * ✅ reasignación masiva (admin/supervisor)
+ * ✅ Recalcula codigoCartera automáticamente
  */
 const bulkAssignAgente = async (req, res) => {
     try {
@@ -412,9 +506,10 @@ const bulkAssignAgente = async (req, res) => {
             if (!chk.ok)
                 return res.status(400).json({ error: chk.error });
         }
+        const codigoCartera = agenteId !== null && agenteId !== undefined ? await getCodigoCarteraFromAgente(agenteId) : null;
         const result = await prisma.cliente.updateMany({
             where: { id: { in: ids } },
-            data: { agenteId: agenteId ?? null },
+            data: { agenteId: agenteId ?? null, codigoCartera },
         });
         return res.json({ updatedCount: result.count });
     }

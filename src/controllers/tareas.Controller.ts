@@ -2,7 +2,10 @@
 
 import { Request, Response, NextFunction } from "express";
 import { prisma } from "../lib/prisma";
-import type { AuthJwtPayload } from "../middlewares/auth.middleware";
+import {
+  esSupervisorOAdmin,
+  type AuthJwtPayload,
+} from "../middlewares/auth.middleware";
 import { ensureContaTaskFolderForTareaAsignada } from "../services/driveContaTasks";
 import { Area } from "@prisma/client";
 import { getAdminDriveClient } from "../lib/googleDrive";
@@ -486,6 +489,8 @@ export const crearTareasDesdePlantilla = async (req: AuthRequest, res: Response)
 // ---------------------------------------------------------------------------
 export const actualizarEstado = async (req: AuthRequest, res: Response) => {
   try {
+    if (!req.user?.id) return res.status(401).json({ message: "No autorizado" });
+
     const { id } = req.params;
     const { estado, fechaComplecion } = req.body as {
       estado?: "PENDIENTE" | "EN_PROCESO" | "COMPLETADA" | "VENCIDA";
@@ -498,6 +503,41 @@ export const actualizarEstado = async (req: AuthRequest, res: Response) => {
 
     const idTarea = Number(id);
     if (Number.isNaN(idTarea)) return res.status(400).json({ message: "ID inválido" });
+
+    // Solo se cambia el estado de una tarea propia.
+    //
+    // El `update` de mas abajo busca por `id_tarea_asignada` y nada mas, asi
+    // que sin esta comprobacion cualquier trabajador con sesion cerraba o
+    // reabria la tarea de cualquiera mandando el numero. No hacia falta
+    // ninguna herramienta: es una peticion desde la consola del navegador.
+    //
+    // Importa mas de lo que parece porque los informes cuentan exactamente
+    // estos estados (`modules/informes/datos.ts`). Un estado cambiado por
+    // quien no debia convierte el informe que lee la administracion en un
+    // dato falso, y sin rastro de por que.
+    //
+    // A los supervisores se les deja pasar como hasta ahora. Para cerrar
+    // tareas ajenas tienen `/tareas/supervision/completar`, que si lleva
+    // guard de rol; este se les respeta para no cambiarles ningun flujo.
+    //
+    // `trabajadorId` es nullable: una tarea sin asignar no es de nadie, y
+    // tampoco se puede tomar cambiandole el estado.
+    if (!esSupervisorOAdmin(req.user)) {
+      const tarea = await prisma.tareaAsignada.findUnique({
+        where: { id_tarea_asignada: idTarea },
+        select: { trabajadorId: true },
+      });
+
+      if (!tarea) {
+        return res.status(404).json({ message: "Tarea no encontrada" });
+      }
+
+      if (tarea.trabajadorId !== req.user.id) {
+        return res
+          .status(403)
+          .json({ message: "Solo puedes cambiar el estado de tus propias tareas" });
+      }
+    }
 
     const dataUpdate: any = { estado };
 

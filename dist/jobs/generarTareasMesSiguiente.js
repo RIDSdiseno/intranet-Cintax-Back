@@ -6,6 +6,23 @@ const prisma_1 = require("../lib/prisma");
 const client_1 = require("@prisma/client");
 const SAFE_HOUR = 12; // evita dramas TZ
 const GENERATION_DAY = 30;
+/**
+ * Solo estas plantillas mensuales CLIENTE deben generarse con este job.
+ * Basado en las plantillas que compartiste.
+ */
+const ALLOWED_TEMPLATE_IDS = [
+    81, // Confeccion y envio de F29
+    82, // Estado de Resultado
+    83, // Simulacion Impuesto Renta aplicado directo
+    85, // Analisis cuentas por cobrar
+    86, // Analisis cuentas por pagar
+    95, // Analisis cuenta retiro socios
+    97, // Envio Pre-IVA
+    100, // Informe Deuda TGR
+    101, // Convenios y/o postergaciones TGR
+    118, // Declaración IVA
+    123, // Pago Cotizaciones
+];
 function atSafeHour(d) {
     const x = new Date(d);
     x.setHours(SAFE_HOUR, 0, 0, 0);
@@ -24,132 +41,218 @@ function clampDayToMonth(year, month1to12, day) {
 function buildDate(year, month1to12, day) {
     return new Date(year, month1to12 - 1, day, SAFE_HOUR, 0, 0, 0);
 }
-// 1=Lun..7=Dom -> JS 0=Dom..6=Sab
-function ourDowToJs(our) {
-    return our === 7 ? 0 : our;
-}
-function getWeekdayDatesInMonth(year, month1to12, ourWeekday1to7) {
-    const start = startOfMonth(year, month1to12 - 1);
-    const end = startOfMonth(year, month1to12); // 1er día del mes siguiente (exclusivo)
-    const jsTarget = ourDowToJs(ourWeekday1to7);
-    const cur = new Date(start);
-    const diff = (jsTarget - cur.getDay() + 7) % 7;
-    cur.setDate(cur.getDate() + diff);
-    const out = [];
-    while (cur < end) {
-        out.push(new Date(cur));
-        cur.setDate(cur.getDate() + 7);
-    }
-    return out.map(atSafeHour);
-}
+/**
+ * Normaliza a formato:
+ * xx.xxx.xxx-x
+ * xx.xxx.xxx-K
+ *
+ * Ej:
+ * 76054761-1   -> 76.054.761-1
+ * 76.054.761-1 -> 76.054.761-1
+ * 760547611    -> 76.054.761-1
+ * 76178353-k   -> 76.178.353-K
+ */
 function normalizeRut(rut) {
-    return (rut ?? "")
+    if (!rut)
+        return "";
+    let clean = rut
         .toString()
         .trim()
         .replace(/\./g, "")
         .replace(/\s+/g, "")
-        .replace(/-k$/i, "-K");
+        .toUpperCase();
+    if (!clean)
+        return "";
+    // Si no trae guion, asumir último carácter como DV
+    if (!clean.includes("-")) {
+        if (clean.length < 2)
+            return "";
+        const body = clean.slice(0, -1);
+        const dv = clean.slice(-1);
+        clean = `${body}-${dv}`;
+    }
+    let [body, dv] = clean.split("-");
+    body = (body ?? "").replace(/\D/g, "");
+    dv = (dv ?? "").replace(/[^0-9K]/g, "").toUpperCase();
+    if (!body || !dv)
+        return "";
+    // Formato con puntos de miles
+    const bodyFormatted = body.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+    return `${bodyFormatted}-${dv}`;
+}
+function isLastDayOfFebruary(today) {
+    const month = today.getMonth(); // febrero = 1
+    if (month !== 1)
+        return false;
+    const tomorrow = new Date(today);
+    tomorrow.setDate(today.getDate() + 1);
+    return tomorrow.getMonth() !== 1;
 }
 function shouldRunToday(today) {
     const day = today.getDate();
-    return day === GENERATION_DAY;
+    return day === GENERATION_DAY || isLastDayOfFebruary(today);
 }
 // calcula (año, mes) del mes siguiente
 function nextMonth(today) {
     const y = today.getFullYear();
     const m0 = today.getMonth(); // 0-11
-    const next = new Date(y, m0 + 1, 1);
+    const next = new Date(y, m0 + 1, 1, SAFE_HOUR, 0, 0, 0);
     return { year: next.getFullYear(), month1to12: next.getMonth() + 1 };
 }
 async function generarTareasMesSiguiente(fechaReferencia = new Date(), opts) {
     const force = opts?.force === true;
+    const dryRun = opts?.dryRun === true;
+    const onlyArea = opts?.onlyArea ?? client_1.Area.CONTA;
     if (!force && !shouldRunToday(fechaReferencia)) {
-        return { ran: false, reason: "Hoy no es día 30", today: fechaReferencia.toISOString() };
+        return {
+            ran: false,
+            reason: "Hoy no corresponde ejecutar el job",
+            today: fechaReferencia.toISOString(),
+            acceptedDays: ["30", "último día de febrero"],
+        };
     }
     const { year, month1to12 } = nextMonth(fechaReferencia);
     const start = startOfMonth(year, month1to12 - 1);
     const end = startOfNextMonth(year, month1to12 - 1);
-    const onlyArea = opts?.onlyArea ?? client_1.Area.CONTA;
-    // 1) Plantillas activas CLIENTE del área
+    // 1) Plantillas activas CLIENTE, MENSUAL, no volátiles y explícitamente permitidas
     const plantillas = await prisma_1.prisma.tareaPlantilla.findMany({
-        where: { activo: true, presentacion: "CLIENTE", area: onlyArea },
+        where: {
+            id_tarea_plantilla: { in: [...ALLOWED_TEMPLATE_IDS] },
+            activo: true,
+            presentacion: client_1.Presentacion.CLIENTE,
+            area: onlyArea,
+            frecuencia: client_1.FrecuenciaTarea.MENSUAL,
+            isVolatile: false,
+            diaMesVencimiento: { not: null },
+        },
         select: {
             id_tarea_plantilla: true,
             frecuencia: true,
             diaMesVencimiento: true,
-            diaSemanaVencimiento: true,
             responsableDefaultId: true,
             nombre: true,
         },
         orderBy: { id_tarea_plantilla: "asc" },
     });
-    // 2) Clientes activos de esa área (en tu caso CONTA/...)
+    // 2) Clientes activos de esa área
     const clientes = await prisma_1.prisma.cliente.findMany({
         where: {
             activo: true,
-            codigoCartera: { startsWith: `${onlyArea}/` }, // "CONTA/"
+            codigoCartera: { startsWith: `${onlyArea}/` },
             agenteId: { not: null },
         },
-        select: { rut: true, agenteId: true },
+        select: {
+            rut: true,
+            agenteId: true,
+        },
         orderBy: [{ rut: "asc" }],
     });
-    const rutList = clientes.map((c) => normalizeRut(c.rut));
+    const clientesNormalizados = clientes
+        .map((c) => ({
+        rut: normalizeRut(c.rut),
+        agenteId: typeof c.agenteId === "number" ? c.agenteId : null,
+    }))
+        .filter((c) => c.rut);
+    const rutList = clientesNormalizados.map((c) => c.rut);
     const plantillaIds = plantillas.map((p) => p.id_tarea_plantilla);
-    // 3) Exclusiones (activa=true => NO aplica)
+    // 3) Exclusiones activas
     const exclusiones = await prisma_1.prisma.clienteTareaExclusion.findMany({
         where: {
             rutCliente: { in: rutList },
             tareaPlantillaId: { in: plantillaIds },
             activa: true,
         },
-        select: { rutCliente: true, tareaPlantillaId: true, desdeFecha: true },
+        select: {
+            rutCliente: true,
+            tareaPlantillaId: true,
+            desdeFecha: true,
+        },
     });
     const exclMap = new Map();
     for (const e of exclusiones) {
         exclMap.set(`${normalizeRut(e.rutCliente)}|${e.tareaPlantillaId}`, e.desdeFecha ?? null);
     }
+    // 4) Cargamos tareas existentes del mes objetivo para deduplicar antes del createMany
+    const existentes = await prisma_1.prisma.tareaAsignada.findMany({
+        where: {
+            tareaPlantillaId: { in: plantillaIds },
+            fechaProgramada: {
+                gte: start,
+                lt: end,
+            },
+            rutCliente: { in: rutList },
+        },
+        select: {
+            tareaPlantillaId: true,
+            rutCliente: true,
+            fechaProgramada: true,
+        },
+    });
+    const existentesSet = new Set(existentes.map((e) => {
+        const rut = normalizeRut(e.rutCliente);
+        const fechaIso = atSafeHour(e.fechaProgramada).toISOString();
+        return `${rut}|${e.tareaPlantillaId}|${fechaIso}`;
+    }));
     const toCreate = [];
-    for (const cli of clientes) {
-        const rut = normalizeRut(cli.rut);
-        const agenteId = typeof cli.agenteId === "number" ? cli.agenteId : null;
+    for (const cli of clientesNormalizados) {
         for (const p of plantillas) {
-            const exKey = `${rut}|${p.id_tarea_plantilla}`;
+            const day = clampDayToMonth(year, month1to12, Number(p.diaMesVencimiento ?? 1));
+            const fecha = buildDate(year, month1to12, day);
+            const exKey = `${cli.rut}|${p.id_tarea_plantilla}`;
             const desdeFecha = exclMap.get(exKey) ?? null;
-            const assigned = agenteId ?? p.responsableDefaultId ?? null;
-            // MENSUAL (una fecha dentro del mes siguiente)
-            if (p.frecuencia === client_1.FrecuenciaTarea.MENSUAL) {
-                const day = clampDayToMonth(year, month1to12, Number(p.diaMesVencimiento ?? 1));
-                const fecha = buildDate(year, month1to12, day);
-                // si exclusión aplica desdeFecha <= fecha => no crea
-                if (desdeFecha && desdeFecha <= fecha)
-                    continue;
-                toCreate.push({
-                    tareaPlantillaId: p.id_tarea_plantilla,
-                    rutCliente: rut,
-                    trabajadorId: assigned,
-                    estado: client_1.EstadoTarea.PENDIENTE,
-                    fechaProgramada: fecha,
-                    comentarios: "Generada automáticamente (día 30 → mes siguiente)",
-                });
+            // Si la exclusión aplica desde una fecha <= fechaProgramada, no crear
+            if (desdeFecha && atSafeHour(desdeFecha) <= atSafeHour(fecha)) {
+                continue;
             }
-            // SEMANAL (varias fechas dentro del mes siguiente)
-            if (p.frecuencia === client_1.FrecuenciaTarea.SEMANAL) {
-                const weekday = Number(p.diaSemanaVencimiento ?? 1);
-                const fechas = getWeekdayDatesInMonth(year, month1to12, weekday);
-                for (const fecha of fechas) {
-                    if (desdeFecha && desdeFecha <= fecha)
-                        continue;
-                    toCreate.push({
-                        tareaPlantillaId: p.id_tarea_plantilla,
-                        rutCliente: rut,
-                        trabajadorId: assigned,
-                        estado: client_1.EstadoTarea.PENDIENTE,
-                        fechaProgramada: fecha,
-                        comentarios: "Generada automáticamente (día 30 → mes siguiente)",
-                    });
-                }
+            const dedupeKey = `${cli.rut}|${p.id_tarea_plantilla}|${atSafeHour(fecha).toISOString()}`;
+            if (existentesSet.has(dedupeKey)) {
+                continue;
             }
+            existentesSet.add(dedupeKey);
+            toCreate.push({
+                tareaPlantillaId: p.id_tarea_plantilla,
+                rutCliente: cli.rut,
+                trabajadorId: cli.agenteId ?? p.responsableDefaultId ?? null,
+                estado: client_1.EstadoTarea.PENDIENTE,
+                fechaProgramada: fecha,
+                comentarios: "Generada automáticamente (día 30 → mes siguiente)",
+            });
         }
+    }
+    if (dryRun) {
+        return {
+            ran: true,
+            dryRun: true,
+            area: onlyArea,
+            forMonth: `${month1to12}/${year}`,
+            range: {
+                start: start.toISOString(),
+                end: end.toISOString(),
+            },
+            templateIds: plantillaIds,
+            totalPlantillas: plantillas.length,
+            totalClientes: clientesNormalizados.length,
+            candidates: toCreate.length,
+            sample: toCreate.slice(0, 20),
+        };
+    }
+    if (toCreate.length === 0) {
+        return {
+            ran: true,
+            area: onlyArea,
+            forMonth: `${month1to12}/${year}`,
+            range: {
+                start: start.toISOString(),
+                end: end.toISOString(),
+            },
+            templateIds: plantillaIds,
+            totalPlantillas: plantillas.length,
+            totalClientes: clientesNormalizados.length,
+            candidates: 0,
+            inserted: 0,
+            skippedApprox: 0,
+            message: "No había tareas nuevas por insertar",
+        };
     }
     const result = await prisma_1.prisma.tareaAsignada.createMany({
         data: toCreate,
@@ -159,7 +262,13 @@ async function generarTareasMesSiguiente(fechaReferencia = new Date(), opts) {
         ran: true,
         area: onlyArea,
         forMonth: `${month1to12}/${year}`,
-        range: { start: start.toISOString(), end: end.toISOString() },
+        range: {
+            start: start.toISOString(),
+            end: end.toISOString(),
+        },
+        templateIds: plantillaIds,
+        totalPlantillas: plantillas.length,
+        totalClientes: clientesNormalizados.length,
         candidates: toCreate.length,
         inserted: result.count,
         skippedApprox: Math.max(0, toCreate.length - result.count),

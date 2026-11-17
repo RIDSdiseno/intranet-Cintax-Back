@@ -37,38 +37,97 @@ exports.cargarTareasDesdeExcel = cargarTareasDesdeExcel;
 const prisma_1 = require("../lib/prisma");
 const client_1 = require("@prisma/client");
 const XLSX = __importStar(require("xlsx"));
-/**
- * Normaliza RUT:
- * - quita puntos
- * - mantiene guion si existe
- * - upper para K
- * Ej: "76.001.158-4" => "76001158-4"
- */
-function normRut(v) {
-    const raw = String(v ?? "").trim();
-    if (!raw)
-        return "";
-    const noDots = raw.replace(/\./g, "").replace(/\s+/g, "");
-    return noDots.toUpperCase();
+function cleanRut(input) {
+    if (input === null || input === undefined)
+        return null;
+    const s = String(input).trim();
+    if (!s)
+        return null;
+    const cleaned = s
+        .toUpperCase()
+        .replace(/\s+/g, "")
+        .replace(/\./g, "")
+        .replace(/[^0-9K-]/g, "");
+    if (!cleaned)
+        return null;
+    if (!cleaned.includes("-")) {
+        if (cleaned.length < 2)
+            return null;
+        return `${cleaned.slice(0, -1)}-${cleaned.slice(-1)}`;
+    }
+    const [body, dv, ...rest] = cleaned.split("-");
+    if (!body || !dv || rest.length)
+        return null;
+    return `${body}-${dv}`;
 }
-/**
- * Normaliza nombre para evitar duplicados:
- * - trim
- * - colapsa espacios
- * - lower
- * - quita tildes/diacríticos (Declaración == Declaracion)
- */
+function computeRutDV(body) {
+    let sum = 0;
+    let mul = 2;
+    for (let i = body.length - 1; i >= 0; i--) {
+        sum += Number(body[i]) * mul;
+        mul = mul === 7 ? 2 : mul + 1;
+    }
+    const mod = 11 - (sum % 11);
+    if (mod === 11)
+        return "0";
+    if (mod === 10)
+        return "K";
+    return String(mod);
+}
+function isValidRut(cleanedRut) {
+    const [body, dv] = cleanedRut.split("-");
+    if (!body || !dv)
+        return false;
+    if (!/^\d+$/.test(body))
+        return false;
+    if (!/^[0-9K]$/.test(dv))
+        return false;
+    return computeRutDV(body) === dv;
+}
+function formatRutDb(cleanedRut) {
+    const [body, dv] = cleanedRut.split("-");
+    const withDots = body.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+    return `${withDots}-${dv}`;
+}
+function normRut(v) {
+    const cleaned = cleanRut(v);
+    if (!cleaned)
+        return "";
+    if (!isValidRut(cleaned))
+        return "";
+    return formatRutDb(cleaned);
+}
 function normNombre(v) {
     const raw = String(v ?? "").trim().replace(/\s+/g, " ").toLowerCase();
     if (!raw)
         return "";
-    return raw
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, ""); // quita diacríticos
+    return raw.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 }
 function normEmail(v) {
     const raw = String(v ?? "").trim().toLowerCase();
     return raw || "";
+}
+function normText(v) {
+    return String(v ?? "")
+        .trim()
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/\s+/g, " ");
+}
+function compactText(v) {
+    return normText(v).replace(/[^a-z0-9]/g, "");
+}
+function emailLocalPart(email) {
+    const e = normEmail(email);
+    const at = e.indexOf("@");
+    return at > 0 ? e.slice(0, at) : e;
+}
+function tokenizeName(v) {
+    return normText(v)
+        .split(" ")
+        .map((x) => x.trim())
+        .filter(Boolean);
 }
 function parsePlantillaIds(v) {
     const raw = String(v ?? "").trim();
@@ -95,7 +154,6 @@ function parsePlantillaNombres(v) {
         .split(/[,;\/\n]+/g)
         .map((x) => String(x).trim())
         .filter(Boolean);
-    // dedupe por normalizado
     const map = new Map();
     for (const p of parts) {
         const k = normNombre(p);
@@ -111,13 +169,11 @@ function parseFecha(v) {
         return null;
     if (v instanceof Date && Number.isFinite(v.getTime()))
         return v;
-    // Excel serial
     if (typeof v === "number") {
         const d = XLSX.SSF.parse_date_code(v);
         if (d)
             return new Date(d.y, d.m - 1, d.d);
     }
-    // Recomendación: usar ISO YYYY-MM-DD en Excel para evitar ambigüedad.
     const d = new Date(String(v));
     return Number.isFinite(d.getTime()) ? d : null;
 }
@@ -143,12 +199,9 @@ function parseFrecuencia(v) {
     const raw = String(v ?? "").trim().toUpperCase();
     if (!raw)
         return null;
-    // Ajusta aquí si tu enum tiene otros valores.
-    // Ej esperados: UNICA, MENSUAL, SEMANAL, ANUAL, etc.
     const allowed = new Set(Object.values(client_1.FrecuenciaTarea));
     if (allowed.has(raw))
         return raw;
-    // alias comunes
     const alias = {
         UNICA: "UNICA",
         ÚNICA: "UNICA",
@@ -158,8 +211,6 @@ function parseFrecuencia(v) {
         MENSUALMENTE: "MENSUAL",
         SEMANAL: "SEMANAL",
         SEMANALMENTE: "SEMANAL",
-        ANUAL: "ANUAL",
-        ANUALMENTE: "ANUAL",
     };
     const mapped = alias[raw];
     if (mapped && allowed.has(mapped))
@@ -184,8 +235,114 @@ function isValidDiaMes(n) {
     return n != null && Number.isInteger(n) && n >= 1 && n <= 31;
 }
 function isValidDiaSemana(n) {
-    // Convención típica 1..7 (Lunes..Domingo). Ajusta si usas otra.
     return n != null && Number.isInteger(n) && n >= 1 && n <= 7;
+}
+const VOLATILE_DAYS = 31;
+function addDays(d, days) {
+    return new Date(d.getTime() + days * 24 * 60 * 60 * 1000);
+}
+function makeVolatileNombreNorm(baseNorm, expiresAt, seed) {
+    const y = expiresAt.getFullYear();
+    const m = String(expiresAt.getMonth() + 1).padStart(2, "0");
+    const day = String(expiresAt.getDate()).padStart(2, "0");
+    const rnd = Math.random().toString(16).slice(2, 8);
+    const safeSeed = (seed || "").replace(/[^a-z0-9]/gi, "").slice(0, 10);
+    return `${baseNorm}__v__${y}${m}${day}__${safeSeed || "x"}__${rnd}`;
+}
+function dedupeTrabajadores(items) {
+    return Array.from(new Map(items.map((item) => [item.id_trabajador, item])).values());
+}
+function resolveTrabajadorFlexible(params) {
+    const { agenteEmail = "", responsableNombre = "", agenteId = null, clienteAgenteId = null, trabajadorEmailMap, trabajadorIdMap, trabajadorByLocalPartMap, trabajadorByCompactNameMap, } = params;
+    if (agenteEmail) {
+        const exact = trabajadorEmailMap.get(normEmail(agenteEmail));
+        if (exact) {
+            return {
+                ok: true,
+                trabajador: exact,
+                matchedBy: "email-exacto",
+            };
+        }
+        const lp = compactText(emailLocalPart(agenteEmail));
+        if (lp) {
+            const matches = Array.from(trabajadorByLocalPartMap.entries())
+                .filter(([k]) => compactText(k) === lp)
+                .flatMap(([, arr]) => arr);
+            const uniq = dedupeTrabajadores(matches);
+            if (uniq.length === 1) {
+                return {
+                    ok: true,
+                    trabajador: uniq[0],
+                    matchedBy: "email-localpart",
+                };
+            }
+            if (uniq.length > 1) {
+                return {
+                    ok: false,
+                    reason: `Correo ambiguo: "${agenteEmail}" coincide con múltiples trabajadores`,
+                };
+            }
+        }
+    }
+    if (agenteId && trabajadorIdMap.has(agenteId)) {
+        return {
+            ok: true,
+            trabajador: trabajadorIdMap.get(agenteId),
+            matchedBy: "id",
+        };
+    }
+    if (responsableNombre) {
+        const compact = compactText(responsableNombre);
+        if (compact) {
+            const exactName = trabajadorByCompactNameMap.get(compact) || [];
+            const uniqExact = dedupeTrabajadores(exactName);
+            if (uniqExact.length === 1) {
+                return {
+                    ok: true,
+                    trabajador: uniqExact[0],
+                    matchedBy: "nombre-exacto",
+                };
+            }
+            if (uniqExact.length > 1) {
+                return {
+                    ok: false,
+                    reason: `Nombre ambiguo: "${responsableNombre}" coincide con múltiples trabajadores`,
+                };
+            }
+            const tokens = tokenizeName(responsableNombre);
+            if (tokens.length > 0) {
+                const contains = Array.from(trabajadorIdMap.values()).filter((t) => {
+                    const n = normText(t.nombre);
+                    return tokens.every((tok) => n.includes(tok));
+                });
+                const uniqContains = dedupeTrabajadores(contains);
+                if (uniqContains.length === 1) {
+                    return {
+                        ok: true,
+                        trabajador: uniqContains[0],
+                        matchedBy: "nombre-flex",
+                    };
+                }
+                if (uniqContains.length > 1) {
+                    return {
+                        ok: false,
+                        reason: `Nombre ambiguo: "${responsableNombre}" coincide con múltiples trabajadores`,
+                    };
+                }
+            }
+        }
+    }
+    if (clienteAgenteId && trabajadorIdMap.has(clienteAgenteId)) {
+        return {
+            ok: true,
+            trabajador: trabajadorIdMap.get(clienteAgenteId),
+            matchedBy: "cliente.agenteId",
+        };
+    }
+    return {
+        ok: false,
+        reason: "No se pudo resolver el responsable con correo, id, nombre ni cliente.agenteId",
+    };
 }
 async function cargarTareasDesdeExcel(req, res) {
     try {
@@ -196,25 +353,18 @@ async function cargarTareasDesdeExcel(req, res) {
                 .json({ error: "Debes enviar un archivo .xlsx en form-data con key=archivo" });
         }
         const skipDuplicates = String(req.query.skipDuplicates ?? "true").toLowerCase() !== "false";
-        /**
-         * defaultFecha (query) es OPCIONAL.
-         * Se usa como fallback si la fila no trae vencimiento/fecha.
-         */
         const defaultFecha = req.query.fechaProgramada ? new Date(String(req.query.fechaProgramada)) : null;
         if (req.query.fechaProgramada && (!defaultFecha || Number.isNaN(defaultFecha.getTime()))) {
             return res.status(400).json({ error: "fechaProgramada en query inválida (usa YYYY-MM-DD)" });
         }
-        // Compatibilidad: agenteId (opcional)
         const queryAgenteId = req.query.agenteId ? Number(req.query.agenteId) : null;
         if (req.query.agenteId && (!Number.isFinite(queryAgenteId) || queryAgenteId <= 0)) {
             return res.status(400).json({ error: "agenteId en query inválido (usa número > 0)" });
         }
-        // Recomendado: agenteEmail (opcional)
         const queryAgenteEmail = req.query.agenteEmail ? normEmail(req.query.agenteEmail) : "";
         if (req.query.agenteEmail && (!queryAgenteEmail || !queryAgenteEmail.includes("@"))) {
             return res.status(400).json({ error: "agenteEmail en query inválido (usa correo válido)" });
         }
-        // Opcional: si viene true, actualiza cliente.agenteId cuando se resuelve por email/id (solo para EXISTENTES)
         const forceUpdateClienteAgente = String(req.query.forceUpdateClienteAgente ?? "false").toLowerCase() === "true";
         const wb = XLSX.read(file.buffer, { type: "buffer", cellDates: true });
         const sheetName = wb.SheetNames[0];
@@ -230,31 +380,21 @@ async function cargarTareasDesdeExcel(req, res) {
             }
             return "";
         };
-        // =====================
-        // Pre-parse filas Excel
-        // =====================
+        const now = new Date();
+        const volatileExpiresAt = addDays(now, VOLATILE_DAYS);
         const parsed = rows.map((r, idx) => {
-            const rut = normRut(get(r, "rut", "RUT"));
+            const rut = normRut(get(r, "rut", "RUT", "rutCliente", "rut_cliente", "RUT CLIENTE", "rut cliente", "R.U.T"));
             const razonSocial = String(get(r, "razonSocial", "razon social", "empresa", "razon")).trim();
-            // Email en fila (o query)
-            const agenteEmailRow = normEmail(get(r, "agenteEmail", "emailAgente", "correoAgente", "correo", "email"));
+            const agenteEmailRow = normEmail(get(r, "agenteEmail", "emailAgente", "correoAgente", "correo", "email", "mail", "responsableEmail", "correoResponsable"));
             const agenteEmail = agenteEmailRow || queryAgenteEmail || "";
-            // Compatibilidad: id en fila (o query)
-            const agenteIdCell = Number(get(r, "agenteId", "trabajadorId", "responsableId", "agente"));
-            const agenteId = Number.isFinite(agenteIdCell) && agenteIdCell > 0 ? agenteIdCell : (queryAgenteId ?? null);
+            const responsableNombre = String(get(r, "responsableNombre", "nombreResponsable", "responsable", "agenteNombre", "nombreAgente", "encargado", "trabajador", "asignadoA") ?? "").trim();
+            const agenteIdCellRaw = get(r, "agenteId", "trabajadorId", "responsableId", "agente");
+            const agenteIdCell = parseIntOrNull(agenteIdCellRaw);
+            const agenteId = agenteIdCell != null && agenteIdCell > 0 ? agenteIdCell : (queryAgenteId ?? null);
             const plantillaIds = parsePlantillaIds(get(r, "plantillaIds", "plantillas", "plantillaId"));
             const plantillaNombres = parsePlantillaNombres(get(r, "tarea", "tareas", "plantillaNombre", "plantilla", "nombreTarea"));
-            /**
-             * Fecha opcional por fila:
-             * - vencimiento / fechaProgramada / fecha
-             * - si no viene, usa defaultFecha (query fechaProgramada)
-             */
+            const isVolatileRow = parseBool(get(r, "volatile", "volatil", "esVolatil", "tareaVolatil", "volatile31")) ?? false;
             const fechaProgramada = parseFecha(get(r, "vencimiento", "fechaProgramada", "fecha")) ?? defaultFecha;
-            /**
-             * ✅ NUEVO (MISMA HOJA):
-             * Config para PLANTILLA cuando es NUEVA.
-             * Si la plantilla ya existe, se IGNORA esta config.
-             */
             const frecuenciaRaw = get(r, "frecuencia", "frecuenciaPlantilla", "frecuencia_tarea");
             const diaMesRaw = get(r, "diaMesVencimiento", "diaMes", "dia_mes_vencimiento");
             const diaSemanaRaw = get(r, "diaSemanaVencimiento", "diaSemana", "dia_semana_vencimiento");
@@ -269,15 +409,16 @@ async function cargarTareasDesdeExcel(req, res) {
             const requiereDrivePlantilla = requiereDriveParsed ?? true;
             const codigoDocumento = String(get(r, "codigoDocumento", "codigo", "codigo_documento")).trim() || "";
             return {
-                row: idx + 2, // 1 = headers, por eso +2
+                row: idx + 2,
                 rut,
                 razonSocial,
                 agenteEmail,
+                responsableNombre,
                 agenteId,
                 plantillaIds,
                 plantillaNombres,
-                fechaProgramada, // Date | null
-                // config “inline” por fila (si hay tarea nueva)
+                fechaProgramada,
+                isVolatileRow,
                 plantillaConfigInline: {
                     frecuenciaPlantilla,
                     diaMesVencimiento,
@@ -290,12 +431,6 @@ async function cargarTareasDesdeExcel(req, res) {
                 },
             };
         });
-        // =====================
-        // Validaciones base:
-        // - rut
-        // - fechaProgramada (en fila o fallback query)
-        // - al menos plantillaIds o plantillaNombres
-        // =====================
         const bad = parsed.filter((p) => !p.rut ||
             !p.fechaProgramada ||
             (p.plantillaIds.length === 0 && p.plantillaNombres.length === 0));
@@ -311,24 +446,72 @@ async function cargarTareasDesdeExcel(req, res) {
                 })),
             });
         }
-        // =====================
-        // 0) Resolver trabajadores por EMAIL (si se usó)
-        // =====================
-        const allEmails = Array.from(new Set(parsed.map((p) => p.agenteEmail).filter(Boolean)));
-        const trabajadoresByEmail = allEmails.length === 0
-            ? []
-            : await prisma_1.prisma.trabajador.findMany({
-                where: { email: { in: allEmails } },
-                select: { id_trabajador: true, email: true },
+        const trabajadores = await prisma_1.prisma.trabajador.findMany({
+            select: {
+                id_trabajador: true,
+                email: true,
+                nombre: true,
+            },
+        });
+        const trabajadorEmailMap = new Map(trabajadores
+            .filter((t) => t.email)
+            .map((t) => [
+            normEmail(t.email),
+            {
+                id_trabajador: t.id_trabajador,
+                email: t.email,
+                nombre: t.nombre,
+            },
+        ]));
+        const trabajadorIdMap = new Map(trabajadores.map((t) => [
+            t.id_trabajador,
+            {
+                id_trabajador: t.id_trabajador,
+                email: t.email,
+                nombre: t.nombre,
+            },
+        ]));
+        const trabajadorByLocalPartMap = new Map();
+        for (const t of trabajadores) {
+            const lp = emailLocalPart(t.email || "");
+            if (!lp)
+                continue;
+            const arr = trabajadorByLocalPartMap.get(lp) || [];
+            arr.push({
+                id_trabajador: t.id_trabajador,
+                email: t.email,
+                nombre: t.nombre,
             });
-        const trabajadorEmailMap = new Map(trabajadoresByEmail.map((t) => [String(t.email).toLowerCase(), t.id_trabajador]));
-        // Si viene queryAgenteEmail y NO existe, fallamos temprano (mejor UX)
-        if (queryAgenteEmail && !trabajadorEmailMap.has(queryAgenteEmail)) {
-            return res.status(400).json({ error: `agenteEmail no existe: ${queryAgenteEmail}` });
+            trabajadorByLocalPartMap.set(lp, arr);
         }
-        // =====================
-        // 1) Clientes: traer existentes, crear faltantes
-        // =====================
+        const trabajadorByCompactNameMap = new Map();
+        for (const t of trabajadores) {
+            const key = compactText(t.nombre);
+            if (!key)
+                continue;
+            const arr = trabajadorByCompactNameMap.get(key) || [];
+            arr.push({
+                id_trabajador: t.id_trabajador,
+                email: t.email,
+                nombre: t.nombre,
+            });
+            trabajadorByCompactNameMap.set(key, arr);
+        }
+        if (queryAgenteEmail) {
+            const resolvedQueryEmail = resolveTrabajadorFlexible({
+                agenteEmail: queryAgenteEmail,
+                responsableNombre: "",
+                agenteId: queryAgenteId,
+                clienteAgenteId: null,
+                trabajadorEmailMap,
+                trabajadorIdMap,
+                trabajadorByLocalPartMap,
+                trabajadorByCompactNameMap,
+            });
+            if (!resolvedQueryEmail.ok) {
+                return res.status(400).json({ error: `agenteEmail no resoluble: ${resolvedQueryEmail.reason}` });
+            }
+        }
         const ruts = Array.from(new Set(parsed.map((p) => p.rut)));
         const clientes = await prisma_1.prisma.cliente.findMany({
             where: { rut: { in: ruts } },
@@ -341,11 +524,19 @@ async function cargarTareasDesdeExcel(req, res) {
             if (clienteMap.has(p.rut))
                 continue;
             const razon = p.razonSocial || `Cliente ${p.rut}`;
-            // asignación default para cliente nuevo:
-            const agenteIdFromEmail = p.agenteEmail
-                ? (trabajadorEmailMap.get(p.agenteEmail) ?? null)
+            const resolvedForNewClient = resolveTrabajadorFlexible({
+                agenteEmail: p.agenteEmail,
+                responsableNombre: p.responsableNombre,
+                agenteId: p.agenteId,
+                clienteAgenteId: null,
+                trabajadorEmailMap,
+                trabajadorIdMap,
+                trabajadorByLocalPartMap,
+                trabajadorByCompactNameMap,
+            });
+            const agenteIdForCliente = resolvedForNewClient.ok
+                ? resolvedForNewClient.trabajador.id_trabajador
                 : null;
-            const agenteIdForCliente = agenteIdFromEmail ?? p.agenteId ?? null;
             clientesToCreate.push({
                 rut: p.rut,
                 razonSocial: razon,
@@ -356,9 +547,8 @@ async function cargarTareasDesdeExcel(req, res) {
         if (clientesToCreate.length) {
             await prisma_1.prisma.cliente.createMany({
                 data: clientesToCreate,
-                skipDuplicates: true, // rut unique
+                skipDuplicates: true,
             });
-            // re-cargar para map actualizado
             const clientes2 = await prisma_1.prisma.cliente.findMany({
                 where: { rut: { in: ruts } },
                 select: { rut: true, agenteId: true, activo: true, razonSocial: true },
@@ -367,9 +557,6 @@ async function cargarTareasDesdeExcel(req, res) {
             for (const c of clientes2)
                 clienteMap.set(c.rut, c);
         }
-        // =====================
-        // 2) Plantillas por ID: validar existen
-        // =====================
         const allPlantillaIds = Array.from(new Set(parsed.flatMap((p) => p.plantillaIds)));
         const plantillasById = allPlantillaIds.length === 0
             ? []
@@ -378,33 +565,64 @@ async function cargarTareasDesdeExcel(req, res) {
                 select: { id_tarea_plantilla: true, activo: true },
             });
         const plantillaIdSet = new Set(plantillasById.map((p) => p.id_tarea_plantilla));
-        // =====================
-        // 3) Plantillas por nombre: resolver o crear por nombreNorm
-        // =====================
         const allNombreNorms = Array.from(new Set(parsed
             .flatMap((p) => p.plantillaNombres)
             .map((n) => normNombre(n))
             .filter(Boolean)));
-        const plantillasFoundByName = allNombreNorms.length === 0
+        const volatileByNombreNorm = new Map();
+        for (const p of parsed) {
+            if (!p.isVolatileRow)
+                continue;
+            for (const nombre of p.plantillaNombres) {
+                const nn = normNombre(nombre);
+                if (!nn)
+                    continue;
+                volatileByNombreNorm.set(nn, true);
+            }
+        }
+        const plantillasFound = allNombreNorms.length === 0
             ? []
             : await prisma_1.prisma.tareaPlantilla.findMany({
-                where: { nombreNorm: { in: allNombreNorms } },
+                where: {
+                    OR: [
+                        { nombreNorm: { in: allNombreNorms } },
+                        {
+                            nombreBaseNorm: { in: allNombreNorms },
+                            isVolatile: true,
+                            activo: true,
+                            expiresAt: { gt: now },
+                        },
+                    ],
+                },
                 select: {
                     id_tarea_plantilla: true,
                     nombreNorm: true,
+                    nombreBaseNorm: true,
+                    isVolatile: true,
+                    expiresAt: true,
+                    createdAt: true,
                     activo: true,
                     frecuencia: true,
                     diaMesVencimiento: true,
                     diaSemanaVencimiento: true,
                 },
+                orderBy: [{ createdAt: "desc" }],
             });
-        const plantillaNameMap = new Map(plantillasFoundByName.map((p) => [p.nombreNorm, p]));
-        /**
-         * ✅ NUEVO:
-         * Unificamos configuración "inline" (misma hoja) por nombreNorm.
-         * Si una tarea NUEVA aparece en múltiples filas, tomamos la primera config completa.
-         * Si hay conflictos evidentes, hacemos fallar con 400 (mejor que crear mal).
-         */
+        const normalNameMap = new Map();
+        const volatileNameMap = new Map();
+        for (const pl of plantillasFound) {
+            if (!pl.activo)
+                continue;
+            if (pl.isVolatile) {
+                if (!pl.nombreBaseNorm)
+                    continue;
+                if (!volatileNameMap.has(pl.nombreBaseNorm))
+                    volatileNameMap.set(pl.nombreBaseNorm, pl);
+            }
+            else {
+                normalNameMap.set(pl.nombreNorm, pl);
+            }
+        }
         const inlineConfigMap = new Map();
         const inlineConfigConflicts = [];
         for (const p of parsed) {
@@ -413,17 +631,13 @@ async function cargarTareasDesdeExcel(req, res) {
                 const nn = normNombre(nombre);
                 if (!nn)
                     continue;
-                // si no viene ninguna columna de config en esta fila, no aporta
                 const hasAnyCfg = !!cfgInline.frecuenciaPlantilla ||
                     cfgInline.diaMesVencimiento != null ||
                     cfgInline.diaSemanaVencimiento != null;
                 if (!hasAnyCfg)
                     continue;
-                // construir config candidata (solo si frecuencia es válida)
-                if (!cfgInline.frecuenciaPlantilla) {
-                    // frecuencia inválida o vacía: no la usamos como config “completa”
+                if (!cfgInline.frecuenciaPlantilla)
                     continue;
-                }
                 const candidate = {
                     frecuencia: cfgInline.frecuenciaPlantilla,
                     diaMesVencimiento: cfgInline.diaMesVencimiento,
@@ -439,7 +653,6 @@ async function cargarTareasDesdeExcel(req, res) {
                     inlineConfigMap.set(nn, { config: candidate, fromRow: p.row });
                 }
                 else {
-                    // detectar conflicto: misma tarea con frecuencia distinta / días distintos
                     const a = prev.config;
                     const b = candidate;
                     const same = a.frecuencia === b.frecuencia &&
@@ -461,54 +674,48 @@ async function cargarTareasDesdeExcel(req, res) {
                 conflicts: inlineConfigConflicts.slice(0, 20),
             });
         }
-        /**
-         * ✅ NUEVO:
-         * Para toda plantilla que NO exista en BD, exigimos config en la MISMA hoja.
-         * Ej: frecuencia=MENSUAL y diaMesVencimiento=15
-         */
         const missingConfig = [];
         for (const nn of allNombreNorms) {
-            if (plantillaNameMap.has(nn))
-                continue; // ya existe => se ignora config excel
+            const wantsVolatile = volatileByNombreNorm.get(nn) === true;
+            const existsNormal = normalNameMap.has(nn);
+            const existsVolatile = volatileNameMap.has(nn);
+            const existsForThisRequest = wantsVolatile ? (existsVolatile || existsNormal) : existsNormal;
+            if (existsForThisRequest)
+                continue;
             const cfg = inlineConfigMap.get(nn)?.config;
             if (!cfg) {
-                // buscar filas donde aparece para ayudar al usuario
                 const rowsWhere = parsed
                     .filter((p) => p.plantillaNombres.some((t) => normNombre(t) === nn))
                     .slice(0, 5)
                     .map((p) => p.row);
                 missingConfig.push({
-                    tarea: parsed.find((p) => p.plantillaNombres.some((t) => normNombre(t) === nn))
+                    tarea: parsed
+                        .find((p) => p.plantillaNombres.some((t) => normNombre(t) === nn))
                         ?.plantillaNombres.find((t) => normNombre(t) === nn) ?? nn,
                     nombreNorm: nn,
                     sampleRows: rowsWhere,
                 });
                 continue;
             }
-            // validar coherencia según frecuencia
-            if (cfg.frecuencia === client_1.FrecuenciaTarea.MENSUAL) {
-                if (!isValidDiaMes(cfg.diaMesVencimiento)) {
-                    missingConfig.push({
-                        tarea: nn,
-                        nombreNorm: nn,
-                        sampleRows: parsed
-                            .filter((p) => p.plantillaNombres.some((t) => normNombre(t) === nn))
-                            .slice(0, 5)
-                            .map((p) => p.row),
-                    });
-                }
+            if (cfg.frecuencia === client_1.FrecuenciaTarea.MENSUAL && !isValidDiaMes(cfg.diaMesVencimiento)) {
+                missingConfig.push({
+                    tarea: nn,
+                    nombreNorm: nn,
+                    sampleRows: parsed
+                        .filter((p) => p.plantillaNombres.some((t) => normNombre(t) === nn))
+                        .slice(0, 5)
+                        .map((p) => p.row),
+                });
             }
-            if (cfg.frecuencia === client_1.FrecuenciaTarea.SEMANAL) {
-                if (!isValidDiaSemana(cfg.diaSemanaVencimiento)) {
-                    missingConfig.push({
-                        tarea: nn,
-                        nombreNorm: nn,
-                        sampleRows: parsed
-                            .filter((p) => p.plantillaNombres.some((t) => normNombre(t) === nn))
-                            .slice(0, 5)
-                            .map((p) => p.row),
-                    });
-                }
+            if (cfg.frecuencia === client_1.FrecuenciaTarea.SEMANAL && !isValidDiaSemana(cfg.diaSemanaVencimiento)) {
+                missingConfig.push({
+                    tarea: nn,
+                    nombreNorm: nn,
+                    sampleRows: parsed
+                        .filter((p) => p.plantillaNombres.some((t) => normNombre(t) === nn))
+                        .slice(0, 5)
+                        .map((p) => p.row),
+                });
             }
         }
         if (missingConfig.length) {
@@ -521,67 +728,120 @@ async function cargarTareasDesdeExcel(req, res) {
             });
         }
         const plantillasToCreate = [];
+        const plannedNormal = new Set();
+        const plannedVolatile = new Set();
         for (const p of parsed) {
             for (const nombre of p.plantillaNombres) {
                 const nn = normNombre(nombre);
                 if (!nn)
                     continue;
-                // ya existe en BD o ya lo reservamos
-                if (plantillaNameMap.has(nn))
+                const wantsVolatile = volatileByNombreNorm.get(nn) === true;
+                const existsNormal = normalNameMap.has(nn);
+                const existsVolatile = volatileNameMap.has(nn);
+                const existsForThisRequest = wantsVolatile ? (existsVolatile || existsNormal) : existsNormal;
+                if (existsForThisRequest)
                     continue;
-                // debe existir config (ya validamos arriba)
+                if (wantsVolatile) {
+                    if (plannedVolatile.has(nn))
+                        continue;
+                }
+                else {
+                    if (plannedNormal.has(nn))
+                        continue;
+                }
                 const cfg = inlineConfigMap.get(nn).config;
-                plantillasToCreate.push({
-                    area: cfg.area ?? client_1.Area.ADMIN,
-                    nombre,
-                    nombreNorm: nn,
-                    detalle: cfg.detalle || "Creada desde carga masiva (Excel)",
-                    frecuencia: cfg.frecuencia,
-                    diaMesVencimiento: cfg.diaMesVencimiento ?? null,
-                    diaSemanaVencimiento: cfg.diaSemanaVencimiento ?? null,
-                    presentacion: cfg.presentacion ?? client_1.Presentacion.CLIENTE,
-                    activo: true,
-                    requiereDrive: cfg.requiereDrive ?? true,
-                    codigoDocumento: cfg.codigoDocumento ?? null,
-                });
-                // reserva para evitar duplicar en el batch
-                plantillaNameMap.set(nn, {
-                    id_tarea_plantilla: -1,
-                    nombreNorm: nn,
-                    activo: true,
-                    frecuencia: cfg.frecuencia,
-                    diaMesVencimiento: cfg.diaMesVencimiento ?? null,
-                    diaSemanaVencimiento: cfg.diaSemanaVencimiento ?? null,
-                });
+                if (wantsVolatile) {
+                    const uniqueNombreNorm = makeVolatileNombreNorm(nn, volatileExpiresAt, `${p.row}_${p.rut}`);
+                    plantillasToCreate.push({
+                        area: cfg.area ?? client_1.Area.ADMIN,
+                        nombre,
+                        nombreNorm: uniqueNombreNorm,
+                        nombreBaseNorm: nn,
+                        detalle: cfg.detalle || "Creada desde carga masiva (Excel)",
+                        frecuencia: cfg.frecuencia,
+                        diaMesVencimiento: cfg.diaMesVencimiento ?? null,
+                        diaSemanaVencimiento: cfg.diaSemanaVencimiento ?? null,
+                        presentacion: cfg.presentacion ?? client_1.Presentacion.CLIENTE,
+                        activo: true,
+                        requiereDrive: cfg.requiereDrive ?? true,
+                        codigoDocumento: cfg.codigoDocumento ?? null,
+                        isVolatile: true,
+                        expiresAt: volatileExpiresAt,
+                    });
+                    plannedVolatile.add(nn);
+                }
+                else {
+                    plantillasToCreate.push({
+                        area: cfg.area ?? client_1.Area.ADMIN,
+                        nombre,
+                        nombreNorm: nn,
+                        nombreBaseNorm: null,
+                        detalle: cfg.detalle || "Creada desde carga masiva (Excel)",
+                        frecuencia: cfg.frecuencia,
+                        diaMesVencimiento: cfg.diaMesVencimiento ?? null,
+                        diaSemanaVencimiento: cfg.diaSemanaVencimiento ?? null,
+                        presentacion: cfg.presentacion ?? client_1.Presentacion.CLIENTE,
+                        activo: true,
+                        requiereDrive: cfg.requiereDrive ?? true,
+                        codigoDocumento: cfg.codigoDocumento ?? null,
+                        isVolatile: false,
+                        expiresAt: null,
+                    });
+                    plannedNormal.add(nn);
+                }
             }
         }
         if (plantillasToCreate.length) {
             await prisma_1.prisma.tareaPlantilla.createMany({
                 data: plantillasToCreate,
-                skipDuplicates: true, // nombreNorm unique
+                skipDuplicates: true,
             });
-            // re-cargar para map final
-            const plantillas3 = await prisma_1.prisma.tareaPlantilla.findMany({
-                where: { nombreNorm: { in: allNombreNorms } },
-                select: {
-                    id_tarea_plantilla: true,
-                    nombreNorm: true,
-                    activo: true,
-                    frecuencia: true,
-                    diaMesVencimiento: true,
-                    diaSemanaVencimiento: true,
-                },
-            });
-            plantillaNameMap.clear();
-            for (const pl of plantillas3)
-                plantillaNameMap.set(pl.nombreNorm, pl);
+            const plantillasReload = allNombreNorms.length === 0
+                ? []
+                : await prisma_1.prisma.tareaPlantilla.findMany({
+                    where: {
+                        OR: [
+                            { nombreNorm: { in: allNombreNorms } },
+                            {
+                                nombreBaseNorm: { in: allNombreNorms },
+                                isVolatile: true,
+                                activo: true,
+                                expiresAt: { gt: now },
+                            },
+                        ],
+                    },
+                    select: {
+                        id_tarea_plantilla: true,
+                        nombreNorm: true,
+                        nombreBaseNorm: true,
+                        isVolatile: true,
+                        expiresAt: true,
+                        createdAt: true,
+                        activo: true,
+                        frecuencia: true,
+                        diaMesVencimiento: true,
+                        diaSemanaVencimiento: true,
+                    },
+                    orderBy: [{ createdAt: "desc" }],
+                });
+            normalNameMap.clear();
+            volatileNameMap.clear();
+            for (const pl of plantillasReload) {
+                if (!pl.activo)
+                    continue;
+                if (pl.isVolatile) {
+                    if (!pl.nombreBaseNorm)
+                        continue;
+                    if (!volatileNameMap.has(pl.nombreBaseNorm))
+                        volatileNameMap.set(pl.nombreBaseNorm, pl);
+                }
+                else {
+                    normalNameMap.set(pl.nombreNorm, pl);
+                }
+            }
         }
-        // =====================
-        // 4) Armar createData para TareaAsignada
-        // =====================
         const results = [];
         const createData = [];
-        // Opcional: preparar updates de cliente (si forceUpdateClienteAgente=true)
         const clienteUpdates = [];
         for (const p of parsed) {
             const errors = [];
@@ -595,44 +855,48 @@ async function cargarTareasDesdeExcel(req, res) {
                 results.push({ row: p.row, rut: p.rut, error: "Cliente está inactivo" });
                 continue;
             }
-            // Resolver trabajadorId por email/id/cliente:
-            const agenteIdFromEmail = p.agenteEmail
-                ? (trabajadorEmailMap.get(p.agenteEmail) ?? null)
-                : null;
-            // Prioridad:
-            // 1) email (fila/query)
-            // 2) agenteId (fila/query)
-            // 3) cliente.agenteId
-            // 4) null
-            const trabajadorId = agenteIdFromEmail ?? p.agenteId ?? c.agenteId ?? null;
-            const assignedTo = agenteIdFromEmail
-                ? { by: "email", value: p.agenteEmail }
-                : p.agenteId
-                    ? { by: "id", value: String(p.agenteId) }
-                    : c.agenteId
-                        ? { by: "cliente.agenteId", value: String(c.agenteId) }
-                        : { by: "none", value: "-" };
-            if (!trabajadorId) {
-                errors.push("No se pudo asignar responsable (no viene agenteEmail/agenteId y el cliente no tiene agenteId). Se asignará trabajadorId=null");
+            const resolvedTrabajador = resolveTrabajadorFlexible({
+                agenteEmail: p.agenteEmail,
+                responsableNombre: p.responsableNombre,
+                agenteId: p.agenteId,
+                clienteAgenteId: c.agenteId ?? null,
+                trabajadorEmailMap,
+                trabajadorIdMap,
+                trabajadorByLocalPartMap,
+                trabajadorByCompactNameMap,
+            });
+            if (!resolvedTrabajador.ok) {
+                results.push({
+                    row: p.row,
+                    rut: p.rut,
+                    error: `No se pudo resolver responsable: ${resolvedTrabajador.reason}`,
+                });
+                continue;
             }
-            // Opcional: actualizar cliente existente si fuerza y viene asignación por email/id
+            const trabajadorId = resolvedTrabajador.trabajador.id_trabajador;
+            const assignedTo = resolvedTrabajador.matchedBy === "email-exacto" || resolvedTrabajador.matchedBy === "email-localpart"
+                ? { by: "email", value: resolvedTrabajador.trabajador.email || p.agenteEmail || "-" }
+                : resolvedTrabajador.matchedBy === "cliente.agenteId"
+                    ? { by: "cliente.agenteId", value: String(trabajadorId) }
+                    : { by: "id", value: String(trabajadorId) };
             if (forceUpdateClienteAgente && clienteStatus === "existing") {
-                const desired = agenteIdFromEmail ?? p.agenteId ?? null;
+                const desired = trabajadorId ?? null;
                 if (desired && c.agenteId !== desired) {
                     clienteUpdates.push({ rut: p.rut, agenteId: desired });
                 }
             }
-            // Plantillas por ID
             const invalidIds = p.plantillaIds.filter((id) => !plantillaIdSet.has(id));
             if (invalidIds.length)
                 errors.push(`Plantillas inválidas por ID: ${invalidIds.join(",")}`);
-            // Plantillas por Nombre (resueltas)
             const resolvedByNameIds = [];
             for (const nombre of p.plantillaNombres) {
                 const nn = normNombre(nombre);
-                const pl = plantillaNameMap.get(nn);
+                const wantsVolatile = p.isVolatileRow || volatileByNombreNorm.get(nn) === true;
+                const pl = wantsVolatile ? (volatileNameMap.get(nn) ?? normalNameMap.get(nn)) : normalNameMap.get(nn);
                 if (!pl) {
-                    errors.push(`No se pudo resolver/crear plantilla para: "${nombre}"`);
+                    errors.push(wantsVolatile
+                        ? `No se pudo resolver/crear plantilla VOLÁTIL (o normal fallback) para: "${nombre}"`
+                        : `No se pudo resolver/crear plantilla para: "${nombre}"`);
                     continue;
                 }
                 resolvedByNameIds.push(pl.id_tarea_plantilla);
@@ -646,7 +910,6 @@ async function cargarTareasDesdeExcel(req, res) {
                 });
                 continue;
             }
-            // Fecha programada (ya validada arriba)
             const fecha = p.fechaProgramada;
             if (!fecha || Number.isNaN(fecha.getTime())) {
                 results.push({
@@ -656,7 +919,6 @@ async function cargarTareasDesdeExcel(req, res) {
                 });
                 continue;
             }
-            // Crear N tareas por fila
             for (const pid of resolvedIds) {
                 createData.push({
                     tareaPlantillaId: pid,
@@ -674,7 +936,7 @@ async function cargarTareasDesdeExcel(req, res) {
                     by: p.plantillaIds.length ? "id" : "nombre",
                     requested: p.plantillaIds.length + p.plantillaNombres.length,
                     resolved: resolvedIds.length,
-                    created: 0, // si quieres distinguir "existente vs creada", se puede calcular
+                    created: 0,
                 },
                 tareasRequested: resolvedIds.length,
                 tareasCreatedApprox: resolvedIds.length,
@@ -689,11 +951,7 @@ async function cargarTareasDesdeExcel(req, res) {
                 results,
             });
         }
-        // =====================
-        // 4.5) (opcional) Actualizar agenteId del cliente existente si se pidió
-        // =====================
         if (forceUpdateClienteAgente && clienteUpdates.length) {
-            // dedupe por rut (último gana)
             const lastByRut = new Map();
             for (const u of clienteUpdates)
                 lastByRut.set(u.rut, u.agenteId);
@@ -704,9 +962,6 @@ async function cargarTareasDesdeExcel(req, res) {
                 });
             }
         }
-        // =====================
-        // 5) Crear asignaciones sin duplicar
-        // =====================
         const created = await prisma_1.prisma.tareaAsignada.createMany({
             data: createData,
             skipDuplicates,
@@ -722,8 +977,11 @@ async function cargarTareasDesdeExcel(req, res) {
             note: skipDuplicates
                 ? "Con skipDuplicates=true, skipped es global. El detalle por fila requiere consultar existentes antes de crear."
                 : null,
-            rules: "Si una tarea (plantilla) NO existe, debes incluir en la MISMA hoja su configuración: frecuencia + día (mensual/semanal). " +
-                "Si la tarea ya existe en el sistema, se ignora la config del Excel y NO se actualiza.",
+            rules: "El responsable se resuelve de forma estricta por correo, id, nombre o cliente.agenteId. " +
+                "Si no se puede identificar de forma única, la fila NO se crea. " +
+                "Si una tarea (plantilla) NO existe, debes incluir en la MISMA hoja su configuración: frecuencia + día (mensual/semanal). " +
+                "Si la tarea ya existe en el sistema, se ignora la config del Excel y NO se actualiza. " +
+                `Si marca volatile=true en la fila, la plantilla se crea como VOLÁTIL y expira en ${VOLATILE_DAYS} días (requiere campos isVolatile/expiresAt/nombreBaseNorm/createdAt en TareaPlantilla).`,
         });
     }
     catch (e) {

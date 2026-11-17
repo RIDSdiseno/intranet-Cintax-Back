@@ -13,7 +13,6 @@ import crypto from "crypto";
 import { Readable } from "stream";
 import "dotenv/config";
 import { OAuth2Client } from "google-auth-library";
-import { syncTicketsFromFreshdesk } from "../services/freshdeskService";
 import {
   generateDriveAuthUrl,
   getAdminDriveClient,
@@ -23,7 +22,7 @@ import {
 import { resolveFolderPath } from "../services/googleDrivePath";
 import type { drive_v3 } from "googleapis";
 import { listGroupMembersEmails } from "../services/googleDirectoryGroups";
-import { isSupervisorOrAdminForTrabajador } from "../lib/roles";
+import { isSupervisorOrAdminForTrabajador, puedeVerInformes } from "../lib/roles";
 import type { AuthJwtPayload, Role } from "../middlewares/auth.middleware";
 
 const prisma = new PrismaClient();
@@ -75,7 +74,7 @@ const AREA_TO_GROUP_ENV: Record<Area, string> = {
   [Area.TRIBUTARIO]: "GROUP_TRIBUTARIO_EMAIL",
 };
 
-// 🔹 Dado un email, mira en qué grupo(s) está y devuelve el Area correspondiente
+// Dado un email, mira en qué grupo(s) está y devuelve el Area correspondiente
 async function resolveAreaFromGroupsByEmail(
   email: string
 ): Promise<Area | null> {
@@ -516,7 +515,7 @@ export const googleLoginTrabajador = async (req: Request, res: Response) => {
     const role: Role = roleFromArea(trabajador.areaInterna);
     const isAdmin = role === "ADMIN";
 
-    // ✅ Payload ahora incluye role (y opcionales útiles)
+    // Payload ahora incluye role (y opcionales útiles)
     const jwtPayload: AuthJwtPayload = {
       id: trabajador.id_trabajador,
       email: trabajador.email,
@@ -525,11 +524,14 @@ export const googleLoginTrabajador = async (req: Request, res: Response) => {
       agenteId: null,
       isSupervisorOrAdmin,
       isAdmin,
+      // Solo para que el front sepa si dibujar el menu de Informes. El acceso
+      // real lo decide el backend en cada request, no este flag.
+      puedeVerInformes: puedeVerInformes(trabajador.email),
     };
 
     const accessToken = signAccessToken(jwtPayload);
 
-    // 🔐 Refresh token
+    // Refresh token
     const rtRaw = generateRT();
     const rtHash = hashRT(rtRaw);
     const rememberBool = parseRemember(remember);
@@ -553,7 +555,7 @@ export const googleLoginTrabajador = async (req: Request, res: Response) => {
         nombre: trabajador.nombre,
         email: trabajador.email,
         areaInterna: trabajador.areaInterna,
-        role, // ✅
+        role, // 
         isSupervisorOrAdmin,
         isAdmin,
       },
@@ -592,7 +594,7 @@ export const loginTrabajador = async (req: Request, res: Response) => {
         email: true,
         passwordHash: true,
         status: true,
-        areaInterna: true, // 👈 para calcular roles
+        areaInterna: true, // para calcular roles
       },
     });
 
@@ -610,7 +612,7 @@ export const loginTrabajador = async (req: Request, res: Response) => {
       return res.status(401).json({ error: "Credenciales inválidas" });
     }
 
-    // 👇 FLAGS supervisor/admin igual que en Google login
+    // FLAGS supervisor/admin igual que en Google login
     const isSupervisorOrAdmin = isSupervisorOrAdminForTrabajador({
       email: user.email,
       areaInterna: user.areaInterna ?? undefined,
@@ -619,7 +621,7 @@ export const loginTrabajador = async (req: Request, res: Response) => {
     const role: Role = roleFromArea(user.areaInterna);
     const isAdmin = role === "ADMIN";
 
-    // ✅ Access Token payload completo
+    // Access Token payload completo
     const jwtPayload: AuthJwtPayload = {
       id: user.id_trabajador,
       email: user.email,
@@ -628,6 +630,8 @@ export const loginTrabajador = async (req: Request, res: Response) => {
       agenteId: null,
       isSupervisorOrAdmin,
       isAdmin,
+      // Ver la nota en el login con Google: es solo para la UI.
+      puedeVerInformes: puedeVerInformes(user.email),
     };
 
     const accessToken = signAccessToken(jwtPayload);
@@ -657,7 +661,7 @@ export const loginTrabajador = async (req: Request, res: Response) => {
       accessToken,
       trabajador: {
         ...safeUser,
-        role, // ✅
+        role, // 
         isSupervisorOrAdmin,
         isAdmin,
       },
@@ -694,91 +698,6 @@ export const logoutTrabajador = async (req: Request, res: Response) => {
   }
 };
 
-export const listTickets = async (req: Request, res: Response) => {
-  try {
-    const { categoria, estado } = req.query as {
-      categoria?: string;
-      estado?: string;
-    };
-    const where: any = {};
-    if (categoria && categoria !== "todos") where.categoria = categoria;
-    if (estado && estado !== "todos") where.estado = estado;
-
-    const tickets = await prisma.ticket.findMany({
-      where,
-      orderBy: [{ freshdeskId: "desc" }, { createdAt: "desc" }],
-      include: {
-        trabajador: {
-          select: { id_trabajador: true, nombre: true, email: true },
-        },
-      },
-    });
-
-    return res.json({ tickets });
-  } catch (err) {
-    console.error("listTickets error:", err);
-    return res.status(500).json({ error: "Error interno" });
-  }
-};
-
-/**
- * POST /api/tickets
- * body: { subject, description, categoria, prioridad? }
- */
-export const createTicket = async (req: Request, res: Response) => {
-  try {
-    const { subject, description, categoria, prioridad } = req.body;
-
-    if (!subject || !description || !categoria) {
-      return res.status(400).json({
-        error: "subject, description y categoria son obligatorios",
-      });
-    }
-
-    const requesterEmail = req.user?.email ?? "desconocido@cintax.cl";
-    const trabajadorId = req.user?.id ?? null;
-
-    const ticket = await prisma.ticket.create({
-      data: {
-        subject,
-        description,
-        categoria,
-        estado: "open",
-        prioridad: prioridad ?? null,
-        requesterEmail,
-        trabajadorId,
-      },
-    });
-
-    console.info("ticket_created", {
-      id_ticket: ticket.id_ticket,
-      categoria: ticket.categoria,
-      estado: ticket.estado,
-      prioridad: ticket.prioridad,
-      createdAt: ticket.createdAt,
-    });
-
-    return res.status(201).json(ticket);
-  } catch (err) {
-    console.error("createTicket error:", err);
-    return res.status(500).json({ error: "Error interno" });
-  }
-};
-
-export const syncTickets = async (req: Request, res: Response) => {
-  try {
-    const count = await syncTicketsFromFreshdesk(); // sin maxPages
-
-    res.json({
-      message: "Sincronización completada",
-      processed: count,
-    });
-  } catch (err) {
-    console.error("Error syncTickets:", err);
-    res.status(500).json({ error: "Error sincronizando con Freshdesk" });
-  }
-};
-
 /*
 ==================================
 
@@ -791,7 +710,7 @@ export const syncTickets = async (req: Request, res: Response) => {
 export const connectDrive = (req: Request, res: Response) => {
   if (!req.user) return res.status(401).json({ error: "No autenticado" });
 
-  // 👇 ahora pasamos el id del trabajador
+  // ahora pasamos el id del trabajador
   const url = generateDriveAuthUrl(req.user.id);
   return res.json({ url });
 };

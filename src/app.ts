@@ -29,10 +29,12 @@ import {
 import { syncAreasFromGroupsCore } from "./controllers/auth.controller";
 
 import { generarTareasMesSiguiente } from "./jobs/generarTareasMesSiguiente";
+import { ingestInbox } from "./modules/tickets/email/ingestInbox";
+import { generarInforme } from "./modules/informes/informes.service";
 import tareasMasivoRoutes from "./routes/tareas-masivo.routes";
 
 import { normNombrePlantilla } from "./utils/normNombrePlantilla"; 
-// 👇 SUPER IMPORTANTE: log de versión
+// SUPER IMPORTANTE: log de versión
 console.log("⚙️ [APP] Cargando app.ts **CINTAX TAREAS V5**");
 
 export const app = express();
@@ -43,9 +45,15 @@ app.set("trust proxy", 1);
 const ENABLE_TASK_CRON = process.env.ENABLE_TASK_CRON === "true";
 const ENABLE_GROUPS_CRON = process.env.ENABLE_GROUPS_CRON === "true";
 const ENABLE_NOTI_CRON = process.env.ENABLE_NOTI_CRON !== "false"; // default true
+// Ingesta de correo -> tickets. Apagado por defecto: encender cuando
+// TICKETS_MAILBOX y la delegacion de Gmail esten verificadas.
+const ENABLE_TICKETS_CRON = process.env.ENABLE_TICKETS_CRON === "true";
+// Informe semanal automatico de los viernes. Apagado por defecto: cada corrida
+// gasta una llamada a la IA, asi que se enciende cuando se quiera en serio.
+const ENABLE_INFORMES_CRON = process.env.ENABLE_INFORMES_CRON === "true";
 
 // =============================
-// ✅ CORS (robusto)
+// CORS (robusto)
 // =============================
 
 // fallback DEV si CORS_ORIGINS no está seteado
@@ -90,10 +98,10 @@ const corsOptions: cors.CorsOptions = {
   optionsSuccessStatus: 204,
 };
 
-// ✅ CORS primero (antes de cualquier ruta)
+// CORS primero (antes de cualquier ruta)
 app.use(cors(corsOptions));
 
-// ✅ Preflight global (más robusto que regex)
+// Preflight global (más robusto que regex)
 app.options(/.*/, cors(corsOptions));
 
 
@@ -105,7 +113,7 @@ app.use(express.json({ limit: "20mb" }));
 app.use(requestIdMiddleware);
 app.use(morgan("dev"));
 
-// 🔍 Ruta de debug de versión
+// Ruta de debug de versión
 app.get("/api/debug-version", (_req, res) => {
   res.json({
     ok: true,
@@ -121,22 +129,22 @@ app.get("/api/debug-version", (_req, res) => {
 // RUTAS API
 // =============================
 
-// ✅ Si tu routes.js tiene /auth, /clientes, etc.
+// Si tu routes.js tiene /auth, /clientes, etc.
 app.use("/api", routes);
 
-// ✅ Trabajadores
+// Trabajadores
 app.use("/api", trabajadorRoutes);
 
-// ✅ Tareas
+// Tareas
 app.use("/api/tareas", tareasRoutes);
 
-// ✅ Dashboard
+// Dashboard
 app.use("/api/dashboard", dashboardRoutes);
 
-// ✅ Notificaciones
+// Notificaciones
 app.use("/api/notificaciones", notificacionesRoutes);
 
-// ✅ Tareas masivo (nota: esto queda en /api/tareas/*)
+// Tareas masivo (nota: esto queda en /api/tareas/*)
 app.use("/api/tareas", tareasMasivoRoutes);
 
 // Debug cookies (útil)
@@ -323,7 +331,7 @@ app.get("/debug/test-notificaciones", async (_req: Request, res: Response) => {
 });
 
 // ======================================================
-// ✅ ENDPOINT MANUAL: genera tareas MES SIGUIENTE
+// ENDPOINT MANUAL: genera tareas MES SIGUIENTE
 // ======================================================
 app.post("/api/tareas/generar-mes-siguiente", async (req, res) => {
   try {
@@ -358,7 +366,7 @@ app.post("/api/tareas/generar-mes-siguiente", async (req, res) => {
 });
 
 // ======================================================
-// ✅ CRON TAREAS: corre TODOS los días (02:05)
+// CRON TAREAS: corre TODOS los días (02:05)
 // ======================================================
 if (ENABLE_TASK_CRON) {
   cron.schedule("5 2 * * *", async () => {
@@ -373,7 +381,7 @@ if (ENABLE_TASK_CRON) {
 }
 
 // ======================================================
-// ✅ CRON NOTIFICACIONES: cada 5 minutos
+// CRON NOTIFICACIONES: cada 5 minutos
 // ======================================================
 if (ENABLE_NOTI_CRON) {
   cron.schedule("*/5 * * * *", async () => {
@@ -388,7 +396,39 @@ if (ENABLE_NOTI_CRON) {
 }
 
 // ======================================================
-// ✅ CRON SYNC AREAS DESDE GOOGLE
+// CRON TICKETS: ingesta de correo cada 5 minutos
+// ======================================================
+if (ENABLE_TICKETS_CRON) {
+  cron.schedule("*/5 * * * *", async () => {
+    try {
+      const out = await ingestInbox({ days: 2, maxThreads: 25 });
+      if (out.createdTickets > 0 || out.createdMessages > 0) {
+        console.log("[CRON] Tickets ingest:", out);
+      }
+    } catch (e) {
+      console.error("[CRON] Error ingestando correos de soporte:", e);
+    }
+  });
+}
+
+// ======================================================
+// CRON INFORMES: viernes a las 08:00
+// ======================================================
+// Se genera el informe de la semana que esta cerrando (la del propio viernes),
+// no la anterior: a esa hora ya esta todo el trabajo de la semana adentro.
+if (ENABLE_INFORMES_CRON) {
+  cron.schedule("0 8 * * 5", async () => {
+    try {
+      const informe = await generarInforme({ generadoAuto: true });
+      console.log("[CRON] Informe semanal generado:", informe.semana);
+    } catch (e) {
+      console.error("[CRON] Error generando el informe semanal:", e);
+    }
+  });
+}
+
+// ======================================================
+// CRON SYNC AREAS DESDE GOOGLE
 // ======================================================
 if (ENABLE_GROUPS_CRON) {
   cron.schedule("0 7 * * *", async () => {
@@ -402,5 +442,5 @@ if (ENABLE_GROUPS_CRON) {
   });
 }
 
-// ⚠️ Error handler SIEMPRE al final
+// Error handler SIEMPRE al final
 app.use(errorHandler);

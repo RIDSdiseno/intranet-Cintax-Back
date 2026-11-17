@@ -14,8 +14,8 @@ const requireAuth = (req, res, next) => {
         }
         const token = authHeader.split(" ")[1];
         const decoded = jsonwebtoken_1.default.verify(token, JWT_SECRET);
-        req.user = decoded; // ✅ calza con la definición global
-        req.token = token; // ✅ si tu global también define token
+        req.user = decoded; // calza con la definición global
+        req.token = token; // si tu global también define token
         return next();
     }
     catch (error) {

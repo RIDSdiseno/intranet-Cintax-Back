@@ -1,12 +1,29 @@
-import { Prisma, TicketMessageType } from "@prisma/client";
+// src/modules/tickets/tickets.service.ts
+//
+// Capa de datos de la ticketera: listado con permisos por area, detalle,
+// hilo de mensajes (con envio por Gmail), actualizacion y auditoria.
+//
+// Depende de las columnas de Ticket agregadas en
+// prisma/manual/20261109_ticket_columnas.sql (clienteId, tags,
+// firstResponseAt, resolvedAt). Si el editor marca esas propiedades como
+// inexistentes, el cliente Prisma esta desactualizado: `npx prisma generate`.
+
+import {
+  Area,
+  Prisma,
+  TicketMessageDirection,
+  TicketMessageType,
+  TicketSource,
+} from "@prisma/client";
 import type { AuthJwtPayload } from "../../middlewares/auth.middleware";
 import { prisma } from "../../lib/prisma";
 import type {
+  TicketEventDto,
   TicketGroup,
   TicketRow,
-  TicketMessage,
   TicketDetail,
   TicketThreadMessage,
+  TicketsPage,
 } from "./dto";
 import {
   enforceArea,
@@ -15,11 +32,32 @@ import {
   isAdmin,
 } from "./access/ticketAccess";
 import {
+  areaFromDetected,
   areaFromSlug,
+  areaToDetected,
   resolveTicketArea,
 } from "./routing/ticketRouting";
 import { logTicketInfo } from "./tickets.logger";
+import { sendEmailAsUser } from "../../services/gmailDelegated.service";
+import { findRutInText, rutCandidates } from "../../utils/rut";
 
+/**
+ * Los filtros tienen que calzar con la ETIQUETA, no con el dato crudo.
+ *
+ * `toPriorityLabel` traduce null a "Media", y los tickets que nacen del correo
+ * llegan sin prioridad. Si el filtro buscara solo el valor exacto, el usuario
+ * veria treinta tickets rotulados "Media", filtraria por Media y le quedaria
+ * uno: el unico con un 2 de verdad en la base. Por eso el caso "media"
+ * incluye tambien los nulos, y el filtro devuelve lo que estaba a la vista.
+ *
+ * La alternativa seria rellenar esa columna en la base, pero eso es cambiar
+ * datos existentes para acomodar la UI, y la etiqueta por defecto es una
+ * decision de presentacion: su lugar es aca.
+ *
+ * `buildStatusWhere` no necesita lo mismo porque `estado` no admite nulos en
+ * el esquema. Si aparecieran estados fuera de los listados abajo, se verian
+ * como "Abierto" y el filtro no los traeria: ahi si habria que revisar esto.
+ */
 function buildStatusWhere(status: string): Prisma.TicketWhereInput | null {
   const key = status.trim().toLowerCase();
   const map: Record<string, string[]> = {
@@ -42,7 +80,7 @@ function buildStatusWhere(status: string): Prisma.TicketWhereInput | null {
 
   return {
     OR: values.map((value) => ({
-      estado: { equals: value, mode: "insensitive" },
+      estado: { equals: value, mode: "insensitive" as const },
     })),
   };
 }
@@ -58,6 +96,11 @@ function buildPriorityWhere(priority: string): Prisma.TicketWhereInput | null {
 
   const value = map[key];
   if (!value) return null;
+
+  // "Media" es lo que muestra toPriorityLabel cuando la prioridad viene nula.
+  if (value === 2) {
+    return { OR: [{ prioridad: 2 }, { prioridad: null }] };
+  }
 
   return { prioridad: value };
 }
@@ -201,37 +244,17 @@ function isMissingTicketMessageTable(err: unknown) {
 
 const REPLIES_MARKER = "\n\n[[TICKET_REPLIES]]\n";
 
-type StoredReply = {
-  id: string;
-  authorId: number | null;
-  authorEmail: string;
-  body: string;
-  createdAt: string;
-};
-
-function splitDescription(raw: string | null) {
+/**
+ * Descripcion del ticket sin la cola de respuestas que el formato antiguo
+ * dejaba embebida como JSON despues de REPLIES_MARKER.
+ *
+ * Esas respuestas antiguas ya no se leen: el hilo vive en TicketMessage y se
+ * sirve desde GET /:id/messages.
+ */
+function descriptionBase(raw: string | null): string {
   const description = raw ?? "";
   const markerIndex = description.indexOf(REPLIES_MARKER);
-  if (markerIndex === -1) {
-    return { base: description, replies: [] as StoredReply[] };
-  }
-
-  const base = description.slice(0, markerIndex);
-  const jsonPart = description.slice(markerIndex + REPLIES_MARKER.length);
-  if (!jsonPart.trim()) {
-    return { base, replies: [] as StoredReply[] };
-  }
-
-  try {
-    const parsed = JSON.parse(jsonPart);
-    if (Array.isArray(parsed)) {
-      return { base, replies: parsed as StoredReply[] };
-    }
-  } catch {
-    // ignore parsing errors
-  }
-
-  return { base, replies: [] as StoredReply[] };
+  return markerIndex === -1 ? description : description.slice(0, markerIndex);
 }
 
 async function getTicketForAccess(
@@ -258,9 +281,25 @@ async function getTicketForAccess(
   return { ticket, auth, admin: ctx.isAdmin, areaInterna: ctx.areaInterna };
 }
 
-function mapThreadMessage(row: {
+/** Lo que hay que traer de TicketMessage para armar un mensaje del hilo. */
+export const THREAD_MESSAGE_INCLUDE = {
+  author: { select: { id_trabajador: true, nombre: true, email: true } },
+  attachments: {
+    select: {
+      id: true,
+      filename: true,
+      mimeType: true,
+      size: true,
+      url: true,
+      createdAt: true,
+    },
+  },
+} as const;
+
+type ThreadMessageRow = {
   id: number;
   type: TicketMessageType;
+  direction?: TicketMessageDirection | null;
   toEmail: string | null;
   cc: string | null;
   bcc: string | null;
@@ -269,16 +308,36 @@ function mapThreadMessage(row: {
   bodyText: string | null;
   createdAt: Date;
   author: { id_trabajador: number; nombre: string; email: string } | null;
-}): TicketThreadMessage {
+  attachments?: Array<{
+    id: number;
+    filename: string;
+    mimeType: string;
+    size: number;
+    url: string;
+    createdAt: Date;
+  }> | null;
+};
+
+function mapThreadMessage(row: ThreadMessageRow): TicketThreadMessage {
   return {
     id: row.id,
     type: row.type,
+    // La UI separa burbujas del cliente y del agente con este flag.
+    isInbound: row.direction === "INBOUND",
     toEmail: row.toEmail,
     cc: row.cc,
     bcc: row.bcc,
     subject: row.subject,
     bodyHtml: row.bodyHtml,
     bodyText: row.bodyText,
+    attachments: (row.attachments ?? []).map((file) => ({
+      id: file.id,
+      filename: file.filename,
+      mimeType: file.mimeType,
+      size: file.size,
+      url: file.url,
+      createdAt: file.createdAt.toISOString(),
+    })),
     createdAt: row.createdAt.toISOString(),
     author: row.author
       ? {
@@ -311,15 +370,21 @@ function ticketMatchesEffectiveArea(
 
 export async function getGroupsForUser(params: {
   user?: AuthJwtPayload;
+  view?: string;
   requestId?: string;
 }) {
-  const { user, requestId } = params;
+  const { user, view, requestId } = params;
   const ctx = await getUserContext(prisma, user);
   if (!ctx) {
     return { totalAll: 0, groups: [] as TicketGroup[] };
   }
 
+  // Los contadores tienen que mirar el mismo conjunto que el listado: si la
+  // vista es "Mis tickets", la pestana no puede seguir contando toda el area.
+  const soloMios = view === "mine";
+
   const candidates = await prisma.ticket.findMany({
+    where: soloMios ? { trabajadorId: ctx.userId } : undefined,
     include: { trabajador: { select: { areaInterna: true } } },
   });
 
@@ -357,6 +422,7 @@ export async function getGroupsForUser(params: {
       isAdmin: ctx.isAdmin,
       areaInterna: ctx.areaInterna,
       allowedAreas: ctx.allowedAreas,
+      view: soloMios ? "mine" : "all",
       groupsCount: groups.length,
       counts: groups.map((g) => ({ slug: g.slug, count: g.count })),
     },
@@ -368,22 +434,350 @@ export async function getGroupsForUser(params: {
   };
 }
 
+/**
+ * Filtros SQL de alcance compartidos por el listado y el resumen:
+ * "Mis tickets" + descarte de tickets con OTRA area explicita.
+ * El area definitiva se termina de resolver en memoria con
+ * ticketMatchesEffectiveArea (resolveTicketArea cae en heuristicas cuando
+ * areaAsignada es null), pero descartar en SQL lo que ya tiene otra area
+ * es seguro: ese ticket nunca va a calzar.
+ */
+function buildScopeFilters(params: {
+  userId: number | null | undefined;
+  area?: string;
+  view?: string;
+  effectiveArea: string;
+}): Prisma.TicketWhereInput[] {
+  const { userId, area, view, effectiveArea } = params;
+  const filters: Prisma.TicketWhereInput[] = [];
+
+  // "Mis tickets": el front lo manda como view=mine o area=mine.
+  if (view === "mine" || area === "mine") {
+    filters.push({ trabajadorId: userId ?? -1 });
+  }
+
+  if (effectiveArea !== "all") {
+    const areaPedida = areaFromSlug(effectiveArea);
+    if (areaPedida) {
+      filters.push({
+        OR: [{ areaAsignada: areaPedida.area }, { areaAsignada: null }],
+      });
+    }
+  }
+
+  return filters;
+}
+
+export type SlaMetric = {
+  /** Porcentaje cumplido (0-100) o null si no hay tickets evaluables. */
+  percent: number | null;
+  /** Tickets con dato suficiente para medir (cumplidos + vencidos). */
+  evaluated: number;
+  /** Respondidos/cerrados fuera de plazo, o abiertos que ya pasaron el plazo. */
+  breached: number;
+  /** Abiertos sin respuesta/cierre todavia (vencidos o no). */
+  pending: number;
+  /** Promedio en minutos de los que si tienen respuesta/cierre. */
+  avgMinutes: number | null;
+  /** Plazo configurado en horas. */
+  targetHours: number;
+};
+
+export type TicketsSummary = {
+  total: number;
+  abiertos: number;
+  pendientes: number;
+  cerrados: number;
+  urgentes: number;
+  slaFirstResponse: SlaMetric;
+  slaResolution: SlaMetric;
+};
+
+/**
+ * Resumen de la ticketera (totales + SLA global) sobre los tickets que el
+ * usuario puede ver en el area pedida. Solo lectura.
+ *
+ * Fuentes de verdad:
+ * - 1ra respuesta: `firstResponseAt`; respaldo = primer PUBLIC_REPLY OUTBOUND.
+ * - Cierre: `resolvedAt`; respaldo = ultimo ESTADO_CAMBIADO a CERRADO/RESUELTO.
+ * Los tickets cerrados sin ninguno de esos datos (p. ej. importados) no se
+ * cuentan en el SLA, para no inventar tiempos.
+ */
+export async function getSummaryForUser(params: {
+  user?: AuthJwtPayload;
+  area?: string;
+  view?: string;
+  requestId?: string;
+}): Promise<TicketsSummary> {
+  const { user, area, view, requestId } = params;
+  const slaHours = getSlaHours();
+
+  const emptyMetric = (targetHours: number): SlaMetric => ({
+    percent: null,
+    evaluated: 0,
+    breached: 0,
+    pending: 0,
+    avgMinutes: null,
+    targetHours,
+  });
+
+  const empty: TicketsSummary = {
+    total: 0,
+    abiertos: 0,
+    pendientes: 0,
+    cerrados: 0,
+    urgentes: 0,
+    slaFirstResponse: emptyMetric(slaHours.firstResponse),
+    slaResolution: emptyMetric(slaHours.resolution),
+  };
+
+  const ctx = await getUserContext(prisma, user);
+  if (!ctx) return empty;
+
+  const forcedArea = enforceArea(ctx, area);
+  const effectiveArea = forcedArea.effectiveArea;
+  if (!effectiveArea) return empty;
+
+  const filters = buildScopeFilters({
+    userId: ctx.userId,
+    area,
+    view,
+    effectiveArea,
+  });
+
+  const rows = await prisma.ticket.findMany({
+    where: filters.length > 0 ? { AND: filters } : undefined,
+    select: {
+      id_ticket: true,
+      estado: true,
+      prioridad: true,
+      createdAt: true,
+      firstResponseAt: true,
+      resolvedAt: true,
+      areaAsignada: true,
+      categoria: true,
+      subject: true,
+      description: true,
+      trabajador: { select: { areaInterna: true } },
+    },
+  });
+
+  const scoped = rows.filter((t) =>
+    ticketMatchesEffectiveArea(t, effectiveArea, ctx.isAdmin)
+  );
+  const ids = scoped.map((t) => t.id_ticket);
+
+  // Respaldo 1ra respuesta: primer PUBLIC_REPLY saliente por ticket.
+  const firstReplyByTicket = new Map<number, Date>();
+  if (ids.length > 0) {
+    try {
+      const replies = await prisma.ticketMessage.groupBy({
+        by: ["ticketId"],
+        where: {
+          ticketId: { in: ids },
+          type: TicketMessageType.PUBLIC_REPLY,
+          direction: TicketMessageDirection.OUTBOUND,
+        },
+        _min: { createdAt: true },
+      });
+      replies.forEach((r) => {
+        if (r._min.createdAt) firstReplyByTicket.set(r.ticketId, r._min.createdAt);
+      });
+    } catch (err) {
+      if (!isMissingTicketMessageTable(err)) throw err;
+    }
+  }
+
+  // Respaldo cierre: ultimo cambio de estado a CERRADO/RESUELTO.
+  const closedAtByTicket = new Map<number, Date>();
+  if (ids.length > 0) {
+    const events = await prisma.ticketEvent.findMany({
+      where: { ticketId: { in: ids }, type: "ESTADO_CAMBIADO" },
+      select: { ticketId: true, createdAt: true, meta: true },
+      orderBy: { createdAt: "asc" },
+    });
+    events.forEach((ev) => {
+      const meta = (ev.meta ?? {}) as { a?: unknown };
+      const label = toStatusLabel(String(meta.a ?? ""));
+      if (label === "Cerrado" || label === "Resuelto") {
+        closedAtByTicket.set(ev.ticketId, ev.createdAt);
+      }
+    });
+  }
+
+  const now = Date.now();
+  const acc = () => ({ evaluated: 0, breached: 0, pending: 0, sumMs: 0, n: 0 });
+  const fr = acc();
+  const rs = acc();
+
+  let abiertos = 0;
+  let pendientes = 0;
+  let cerrados = 0;
+  let urgentes = 0;
+
+  const measure = (
+    bucket: ReturnType<typeof acc>,
+    createdAt: Date,
+    doneAt: Date | null,
+    isOpen: boolean,
+    targetHours: number
+  ) => {
+    const dueMs = createdAt.getTime() + targetHours * 3_600_000;
+    if (doneAt) {
+      const took = Math.max(0, doneAt.getTime() - createdAt.getTime());
+      bucket.evaluated++;
+      bucket.sumMs += took;
+      bucket.n++;
+      if (doneAt.getTime() > dueMs) bucket.breached++;
+      return;
+    }
+    if (!isOpen) return; // cerrado sin dato: no se puede medir
+    bucket.pending++;
+    if (now > dueMs) {
+      bucket.evaluated++;
+      bucket.breached++;
+    }
+  };
+
+  scoped.forEach((t) => {
+    const label = toStatusLabel(t.estado);
+    const isClosed = label === "Cerrado" || label === "Resuelto";
+
+    if (isClosed) cerrados++;
+    else if (label === "Pendiente") pendientes++;
+    else abiertos++;
+
+    if (!isClosed && t.prioridad === 4) urgentes++;
+
+    measure(
+      fr,
+      t.createdAt,
+      t.firstResponseAt ?? firstReplyByTicket.get(t.id_ticket) ?? null,
+      !isClosed,
+      slaHours.firstResponse
+    );
+    measure(
+      rs,
+      t.createdAt,
+      t.resolvedAt ?? (isClosed ? closedAtByTicket.get(t.id_ticket) ?? null : null),
+      !isClosed,
+      slaHours.resolution
+    );
+  });
+
+  const toMetric = (b: ReturnType<typeof acc>, targetHours: number): SlaMetric => ({
+    percent:
+      b.evaluated > 0
+        ? Math.round(((b.evaluated - b.breached) / b.evaluated) * 100)
+        : null,
+    evaluated: b.evaluated,
+    breached: b.breached,
+    pending: b.pending,
+    avgMinutes: b.n > 0 ? Math.round(b.sumMs / b.n / 60_000) : null,
+    targetHours,
+  });
+
+  const summary: TicketsSummary = {
+    total: scoped.length,
+    abiertos,
+    pendientes,
+    cerrados,
+    urgentes,
+    slaFirstResponse: toMetric(fr, slaHours.firstResponse),
+    slaResolution: toMetric(rs, slaHours.resolution),
+  };
+
+  logTicketInfo({
+    action: "tickets_summary",
+    requestId,
+    userId: ctx.userId,
+    role: ctx.role,
+    meta: { effectiveArea, total: summary.total },
+  });
+
+  return summary;
+}
+
 export async function getTicketsForUser(params: {
   user?: AuthJwtPayload;
   area?: string;
+  view?: string;
   q?: string;
+  keywords?: string;
   status?: string;
   priority?: string;
+  asignado?: string;
+  solicitante?: string;
+  page?: number;
+  pageSize?: number;
   requestId?: string;
-}) {
-  const { user, area, q, status, priority, requestId } = params;
+}): Promise<TicketsPage> {
+  const {
+    user,
+    area,
+    view,
+    q,
+    keywords,
+    status,
+    priority,
+    asignado,
+    solicitante,
+    requestId,
+  } = params;
+
+  const page = Math.max(1, Math.floor(Number(params.page) || 1));
+  const pageSize = Math.min(
+    200,
+    Math.max(1, Math.floor(Number(params.pageSize) || 50))
+  );
+
+  const empty: TicketsPage = { items: [], total: 0, page, pageSize };
+
   const ctx = await getUserContext(prisma, user);
-  if (!ctx) return [] as TicketRow[];
+  if (!ctx) return empty;
 
   const forcedArea = enforceArea(ctx, area);
-  if (!forcedArea.effectiveArea) return [] as TicketRow[];
+  if (!forcedArea.effectiveArea) return empty;
 
-  const filters: Prisma.TicketWhereInput[] = [];
+  const requestedArea = forcedArea.requestedArea;
+  const effectiveArea = forcedArea.effectiveArea;
+
+  const filters = buildScopeFilters({
+    userId: ctx.userId,
+    area,
+    view,
+    effectiveArea,
+  });
+
+  if (asignado && asignado.trim()) {
+    const value = asignado.trim().toLowerCase();
+    // La UI manda "none" para "Agente: No asignado" (BarraFiltrosTickets).
+    const sinAsignar = ["none", "unassigned", "no-asignado", "sin-asignar"];
+    if (sinAsignar.includes(value)) {
+      filters.push({ trabajadorId: null });
+    } else if (value !== "all" && value !== "todos") {
+      const parsed = Number(value);
+      if (Number.isInteger(parsed) && parsed > 0) {
+        filters.push({ trabajadorId: parsed });
+      }
+    }
+  }
+
+  if (solicitante && solicitante.trim()) {
+    filters.push({
+      requesterEmail: { contains: solicitante.trim(), mode: "insensitive" },
+    });
+  }
+
+  if (keywords && keywords.trim()) {
+    const kw = keywords.trim();
+    filters.push({
+      OR: [
+        { subject: { contains: kw, mode: "insensitive" } },
+        { description: { contains: kw, mode: "insensitive" } },
+      ],
+    });
+  }
 
   if (q && q.trim()) {
     const search = q.trim();
@@ -419,9 +813,6 @@ export async function getTicketsForUser(params: {
     orderBy: { createdAt: "desc" },
   });
 
-  const requestedArea = forcedArea.requestedArea;
-  const effectiveArea = forcedArea.effectiveArea;
-
   const results: TicketRow[] = [];
   rows.forEach((ticket) => {
     if (!ticketMatchesEffectiveArea(ticket, effectiveArea, ctx.isAdmin)) return;
@@ -435,9 +826,14 @@ export async function getTicketsForUser(params: {
       requesterEmail: ticket.requesterEmail || "Sin correo",
       preview: buildPreview(ticket.description),
       group: toGroupLabel(ticket.categoria),
+      areaDetected: areaToDetected(
+        ticket.areaAsignada ?? resolved?.area ?? null
+      ),
       areaSlug: resolved?.slug ?? null,
       areaLabel: resolved?.name ?? null,
       categoria: ticket.categoria ?? null,
+      tags: ticket.tags ?? [],
+      trabajadorId: ticket.trabajadorId ?? null,
       status: toStatusLabel(ticket.estado),
       priority: toPriorityLabel(ticket.prioridad),
       createdAt: ticket.createdAt.toISOString(),
@@ -456,106 +852,23 @@ export async function getTicketsForUser(params: {
       effectiveArea,
       forced: forcedArea.forced,
       resultCount: results.length,
+      page,
+      pageSize,
     },
   });
 
-  return results;
+  // El filtro por area se resuelve en memoria (depende del area del asignado),
+  // asi que la paginacion se aplica sobre el conjunto ya filtrado.
+  const start = (page - 1) * pageSize;
+
+  return {
+    items: results.slice(start, start + pageSize),
+    total: results.length,
+    page,
+    pageSize,
+  };
 }
-export async function getInboxForUser(params: {
-  user?: AuthJwtPayload;
-  area?: string;
-  q?: string;
-  status?: string;
-  priority?: string;
-  limit?: number;
-  requestId?: string;
-}) {
-  const { user, area, q, status, priority, limit = 20, requestId } = params;
-  const ctx = await getUserContext(prisma, user);
-  if (!ctx) return [] as TicketRow[];
 
-  const forcedArea = enforceArea(ctx, area);
-  if (!forcedArea.effectiveArea) return [] as TicketRow[];
-
-  const filters: Prisma.TicketWhereInput[] = [];
-
-  if (q && q.trim()) {
-    const search = q.trim();
-    const orFilters: Prisma.TicketWhereInput[] = [
-      { subject: { contains: search, mode: "insensitive" } },
-      { requesterEmail: { contains: search, mode: "insensitive" } },
-    ];
-
-    const num = Number(search);
-    if (!Number.isNaN(num)) {
-      orFilters.push({ id_ticket: num });
-      orFilters.push({ freshdeskId: num });
-    }
-
-    filters.push({ OR: orFilters });
-  }
-
-  if (status) {
-    const statusWhere = buildStatusWhere(status);
-    if (statusWhere) filters.push(statusWhere);
-  }
-
-  if (priority) {
-    const priorityWhere = buildPriorityWhere(priority);
-    if (priorityWhere) filters.push(priorityWhere);
-  }
-
-  const where = filters.length > 0 ? { AND: filters } : undefined;
-
-  const rows = await prisma.ticket.findMany({
-    where,
-    include: { trabajador: { select: { areaInterna: true } } },
-    orderBy: { createdAt: "desc" },
-    take: limit,
-  });
-
-  const requestedArea = forcedArea.requestedArea;
-  const effectiveArea = forcedArea.effectiveArea;
-
-  const results: TicketRow[] = [];
-  rows.forEach((ticket) => {
-    if (!ticketMatchesEffectiveArea(ticket, effectiveArea, ctx.isAdmin)) return;
-    const resolved = resolveTicketArea(ticket);
-
-    results.push({
-      id: ticket.id_ticket,
-      number: ticket.id_ticket,
-      subject: ticket.subject || "Sin asunto",
-      requester: ticket.requesterEmail || "Sin correo",
-      requesterEmail: ticket.requesterEmail || "Sin correo",
-      preview: buildPreview(ticket.description),
-      group: toGroupLabel(ticket.categoria),
-      areaSlug: resolved?.slug ?? null,
-      areaLabel: resolved?.name ?? null,
-      categoria: ticket.categoria ?? null,
-      status: toStatusLabel(ticket.estado),
-      priority: toPriorityLabel(ticket.prioridad),
-      createdAt: ticket.createdAt.toISOString(),
-    });
-  });
-
-  logTicketInfo({
-    action: "tickets_inbox",
-    requestId,
-    userId: ctx.userId,
-    role: ctx.role,
-    meta: {
-      isAdmin: ctx.isAdmin,
-      allowedAreas: ctx.allowedAreas,
-      requestedArea,
-      effectiveArea,
-      forced: forcedArea.forced,
-      resultCount: results.length,
-    },
-  });
-
-  return results;
-}
 export async function getInboxDiagnosticForAdmin(params: {
   user?: AuthJwtPayload;
   limit?: number;
@@ -638,53 +951,28 @@ export async function getTicketDetailForUser(
   if (!access) return null;
   const { ticket } = access;
 
-  const { base, replies } = splitDescription(ticket.description);
+  // El hilo NO se arma aca: la UI lo pide aparte con GET /:id/messages.
+  const base = descriptionBase(ticket.description);
 
-  let dbMessages: Array<{
-    id: number;
-    type: TicketMessageType;
-    toEmail: string | null;
-    cc: string | null;
-    bcc: string | null;
-    subject: string | null;
-    bodyHtml: string | null;
-    bodyText: string | null;
-    createdAt: Date;
-    author: { id_trabajador: number; nombre: string; email: string } | null;
-  }> = [];
-
-  try {
-    dbMessages = await prisma.ticketMessage.findMany({
-      where: { ticketId: ticket.id_ticket },
-      orderBy: { createdAt: "asc" },
-      include: {
-        author: {
-          select: { id_trabajador: true, nombre: true, email: true },
+  // `firstResponseAt` es la fuente de verdad. Solo se busca el primer
+  // PUBLIC_REPLY como respaldo, para tickets anteriores a esa columna.
+  let hasFirstPublicReply = Boolean(ticket.firstResponseAt);
+  if (!hasFirstPublicReply) {
+    try {
+      const firstReply = await prisma.ticketMessage.findFirst({
+        where: {
+          ticketId: ticket.id_ticket,
+          type: TicketMessageType.PUBLIC_REPLY,
         },
-      },
-    });
-  } catch (err) {
-    if (!isMissingTicketMessageTable(err)) {
-      throw err;
+        select: { id: true },
+      });
+      hasFirstPublicReply = Boolean(firstReply);
+    } catch (err) {
+      if (!isMissingTicketMessageTable(err)) {
+        throw err;
+      }
+      hasFirstPublicReply = false;
     }
-    console.warn(
-      "TicketMessage table missing, returning legacy thread only."
-    );
-    dbMessages = [];
-  }
-
-  let hasFirstPublicReply = false;
-  try {
-    const firstReply = await prisma.ticketMessage.findFirst({
-      where: { ticketId: ticket.id_ticket, type: TicketMessageType.PUBLIC_REPLY },
-      select: { id: true },
-    });
-    hasFirstPublicReply = Boolean(firstReply);
-  } catch (err) {
-    if (!isMissingTicketMessageTable(err)) {
-      throw err;
-    }
-    hasFirstPublicReply = false;
   }
 
   const slaHours = getSlaHours();
@@ -697,41 +985,16 @@ export async function getTicketDetailForUser(
     slaHours.resolution
   ).toISOString();
   const normalizedEstado = normalizeEstadoInput(ticket.estado);
-  const resolutionStatus = normalizedEstado === "CERRADO" ? "OK" : "PENDIENTE";
+
+  // Igual que arriba: manda `resolvedAt`, y el estado queda de respaldo.
+  // RESUELTO tambien cuenta como resuelto, no solo CERRADO.
+  const resolutionStatus =
+    ticket.resolvedAt ||
+    normalizedEstado === "CERRADO" ||
+    normalizedEstado === "RESUELTO"
+      ? "OK"
+      : "PENDIENTE";
   const firstResponseStatus = hasFirstPublicReply ? "OK" : "PENDIENTE";
-
-  const legacyReplies = replies.map((reply) => ({
-    id: reply.id,
-    authorEmail: reply.authorEmail || "sin-correo@cintax.cl",
-    body: reply.body,
-    createdAt: reply.createdAt,
-    kind: "reply" as const,
-  }));
-
-  const dbReplies = dbMessages.map((msg) => ({
-    id: `db-${msg.id}`,
-    authorEmail: msg.author?.email || "sistema@cintax.cl",
-    body: msg.bodyText || stripHtmlToText(msg.bodyHtml || ""),
-    createdAt: msg.createdAt.toISOString(),
-    kind: "reply" as const,
-  }));
-
-  const mergedReplies = [...legacyReplies, ...dbReplies].sort((a, b) => {
-    const aTime = new Date(a.createdAt).getTime();
-    const bTime = new Date(b.createdAt).getTime();
-    return aTime - bTime;
-  });
-
-  const messages: TicketMessage[] = [
-    {
-      id: `requester-${ticket.id_ticket}`,
-      authorEmail: ticket.requesterEmail || "sin-correo@cintax.cl",
-      body: base || "Sin descripcion.",
-      createdAt: ticket.createdAt.toISOString(),
-      kind: "requester",
-    },
-    ...mergedReplies,
-  ];
 
   const detail: TicketDetail = {
     id: ticket.id_ticket,
@@ -741,6 +1004,9 @@ export async function getTicketDetailForUser(
     requesterEmail: ticket.requesterEmail || "Sin correo",
     group: toGroupLabel(ticket.categoria),
     categoria: ticket.categoria ?? null,
+    areaDetected: areaToDetected(ticket.areaAsignada ?? null),
+    tags: ticket.tags ?? [],
+    clienteId: ticket.clienteId ?? null,
     status: toStatusLabel(ticket.estado),
     estado: ticket.estado ?? null,
     priority: toPriorityLabel(ticket.prioridad),
@@ -754,7 +1020,7 @@ export async function getTicketDetailForUser(
     resolutionStatus,
   };
 
-  return { ticket: detail, messages };
+  return { ticket: detail };
 }
 
 export type CreateTicketMessageInput = {
@@ -773,28 +1039,13 @@ export async function getTicketMessagesForUser(
   const access = await getTicketForAccess(id, user);
   if (!access) return null;
 
-  let rows: Array<{
-    id: number;
-    type: TicketMessageType;
-    toEmail: string | null;
-    cc: string | null;
-    bcc: string | null;
-    subject: string | null;
-    bodyHtml: string | null;
-    bodyText: string | null;
-    createdAt: Date;
-    author: { id_trabajador: number; nombre: string; email: string } | null;
-  }> = [];
+  let rows: ThreadMessageRow[] = [];
 
   try {
     rows = await prisma.ticketMessage.findMany({
       where: { ticketId: id },
       orderBy: { createdAt: "asc" },
-      include: {
-        author: {
-          select: { id_trabajador: true, nombre: true, email: true },
-        },
-      },
+      include: THREAD_MESSAGE_INCLUDE,
     });
   } catch (err) {
     if (!isMissingTicketMessageTable(err)) {
@@ -804,28 +1055,52 @@ export async function getTicketMessagesForUser(
     rows = [];
   }
 
-  return rows.map((row) =>
-    mapThreadMessage({
-      id: row.id,
-      type: row.type,
-      toEmail: row.toEmail,
-      cc: row.cc,
-      bcc: row.bcc,
-      subject: row.subject,
-      bodyHtml: row.bodyHtml,
-      bodyText: row.bodyText,
-      createdAt: row.createdAt,
-      author: row.author,
-    })
-  );
+  // Se pasa la fila completa: copiarla campo por campo ya dejo fuera
+  // `direction` y `attachments` una vez, y el hilo perdio el color de los
+  // correos entrantes y la lista de adjuntos al recargar.
+  return rows.map(mapThreadMessage);
+}
+
+export type TicketEmailStatus = "SENT" | "SKIPPED" | "FAILED";
+
+export type CreateTicketMessageResult = {
+  message: TicketThreadMessage;
+  emailStatus: TicketEmailStatus;
+  emailError: string | null;
+};
+
+/** Firma al pie del cuerpo, igual que el flujo anterior. */
+function withSignature(body: string, authorName: string) {
+  const cleanBody = String(body ?? "").trim();
+  const signature = `\n\n--\n${authorName}\nSoporte Cintax`;
+  return cleanBody ? cleanBody + signature : signature;
+}
+
+function splitEmailList(raw?: string | null): string[] {
+  if (!raw) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const part of String(raw).split(/[;,]/g)) {
+    const value = part.trim().toLowerCase();
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    out.push(value);
+  }
+  return out;
 }
 
 export async function createTicketMessageForUser(params: {
   id: number;
   user?: AuthJwtPayload;
   payload: CreateTicketMessageInput;
-}) {
+  attachments?: Array<{
+    originalname: string;
+    mimetype: string;
+    buffer: Buffer;
+  }>;
+}): Promise<CreateTicketMessageResult | null> {
   const { id, user, payload } = params;
+  const files = params.attachments ?? [];
   const access = await getTicketForAccess(id, user);
   if (!access) return null;
   const { ticket, auth } = access;
@@ -851,18 +1126,7 @@ export async function createTicketMessageForUser(params: {
     throw new Error("Mensaje vacio o sin contenido util");
   }
 
-  let created: {
-    id: number;
-    type: TicketMessageType;
-    toEmail: string | null;
-    cc: string | null;
-    bcc: string | null;
-    subject: string | null;
-    bodyHtml: string | null;
-    bodyText: string | null;
-    createdAt: Date;
-    author: { id_trabajador: number; nombre: string; email: string } | null;
-  };
+  let created: ThreadMessageRow;
 
   try {
     created = await prisma.ticketMessage.create({
@@ -870,6 +1134,9 @@ export async function createTicketMessageForUser(params: {
         ticketId: ticket.id_ticket,
         authorTrabajadorId: auth.id_trabajador,
         type: payload.type,
+        // Lo escribe un agente desde la intranet: siempre saliente, aunque
+        // el envio del correo falle despues.
+        direction: "OUTBOUND",
         toEmail,
         cc,
         bcc,
@@ -890,18 +1157,137 @@ export async function createTicketMessageForUser(params: {
     throw err;
   }
 
-  return mapThreadMessage({
-    id: created.id,
-    type: created.type,
-    toEmail: created.toEmail,
-    cc: created.cc,
-    bcc: created.bcc,
-    subject: created.subject,
-    bodyHtml: created.bodyHtml,
-    bodyText: created.bodyText,
-    createdAt: created.createdAt,
-    author: created.author,
-  });
+  // Adjuntos: se registran siempre, con url placeholder (van por correo,
+  // todavia no se suben a Drive).
+  if (files.length > 0) {
+    try {
+      await prisma.ticketAttachment.createMany({
+        data: files.map((file) => ({
+          messageId: created.id,
+          filename: file.originalname,
+          mimeType: file.mimetype,
+          size: file.buffer?.length ?? 0,
+          url: `email://${created.id}/${file.originalname}`,
+        })),
+      });
+    } catch (err) {
+      console.error("createTicketMessageForUser attachments error:", err);
+    }
+  }
+
+  // Los adjuntos se insertan despues del mensaje, asi que se releen para que
+  // la respuesta ya los traiga y la UI pueda listarlos sin recargar el hilo.
+  if (files.length > 0) {
+    const withAttachments = await prisma.ticketMessage.findUnique({
+      where: { id: created.id },
+      include: THREAD_MESSAGE_INCLUDE,
+    });
+    if (withAttachments) created = withAttachments;
+  }
+
+  const mapped = mapThreadMessage(created);
+
+  // Las notas internas nunca salen por correo.
+  if (payload.type === TicketMessageType.INTERNAL_NOTE) {
+    await recordTicketEvent({
+      ticketId: ticket.id_ticket,
+      type: "NOTA_INTERNA",
+      actorTrabajadorId: auth.id_trabajador,
+      meta: { messageId: created.id },
+    });
+    return { message: mapped, emailStatus: "SKIPPED", emailError: null };
+  }
+
+  const mailbox = process.env.TICKETS_MAILBOX;
+  const destinatarios = splitEmailList(toEmail);
+
+  if (!mailbox || destinatarios.length === 0) {
+    return {
+      message: mapped,
+      emailStatus: "FAILED",
+      emailError: !mailbox
+        ? "Falta TICKETS_MAILBOX en el entorno"
+        : "No hay destinatario para el correo",
+    };
+  }
+
+  const authorName = auth.email;
+  const subjectToSend =
+    payload.type === TicketMessageType.FORWARD
+      ? subject || `Fwd: ${ticket.subject ?? "Sin asunto"}`
+      : ticket.subject?.startsWith("Re:")
+      ? ticket.subject
+      : `Re: ${ticket.subject ?? "Sin asunto"}`;
+
+  try {
+    const sendRes = await sendEmailAsUser({
+      fromUserEmail: mailbox,
+      fromName: "Soporte Cintax",
+      to: destinatarios.join(", "),
+      cc: cc ?? undefined,
+      bcc: bcc ?? undefined,
+      subject: subjectToSend,
+      bodyText: withSignature(bodyText, authorName),
+      attachments: files.map((file) => ({
+        filename: file.originalname,
+        mimeType: file.mimetype,
+        content: file.buffer,
+      })),
+      replyTo: mailbox,
+      threadId: ticket.gmailThreadId ?? undefined,
+    });
+
+    const gmailMessageId = (sendRes as any)?.id ?? null;
+    const threadId = (sendRes as any)?.threadId ?? null;
+
+    // Primer envio del ticket: queda enganchado al hilo de Gmail.
+    if (threadId && !ticket.gmailThreadId) {
+      await prisma.ticket.update({
+        where: { id_ticket: ticket.id_ticket },
+        data: { gmailThreadId: threadId },
+      });
+    }
+
+    await prisma.ticketMessage.update({
+      where: { id: created.id },
+      data: { gmailMessageId, subject: subjectToSend },
+    });
+
+    // Primera respuesta publica: marca el SLA de primera respuesta.
+    if (
+      payload.type === TicketMessageType.PUBLIC_REPLY &&
+      !ticket.firstResponseAt
+    ) {
+      await prisma.ticket.update({
+        where: { id_ticket: ticket.id_ticket },
+        data: { firstResponseAt: new Date() },
+      });
+    }
+
+    await recordTicketEvent({
+      ticketId: ticket.id_ticket,
+      type:
+        payload.type === TicketMessageType.FORWARD
+          ? "CORREO_REENVIADO"
+          : "CORREO_ENVIADO",
+      actorTrabajadorId: auth.id_trabajador,
+      meta: { messageId: created.id, to: destinatarios },
+    });
+
+    return {
+      message: { ...mapped, subject: subjectToSend },
+      emailStatus: "SENT",
+      emailError: null,
+    };
+  } catch (err) {
+    // El mensaje ya quedo guardado: se informa el fallo sin perderlo.
+    console.error("createTicketMessageForUser send error:", err);
+    return {
+      message: mapped,
+      emailStatus: "FAILED",
+      emailError: err instanceof Error ? err.message : "Error enviando correo",
+    };
+  }
 }
 
 export async function updateTicketForUser(params: {
@@ -911,8 +1297,21 @@ export async function updateTicketForUser(params: {
   prioridad?: string | number | null;
   categoria?: string | null;
   trabajadorId?: number | null;
+  tags?: string[] | string | null;
+  areaDetected?: string | null;
+  clienteId?: number | null;
 }) {
-  const { id, user, estado, prioridad, categoria, trabajadorId } = params;
+  const {
+    id,
+    user,
+    estado,
+    prioridad,
+    categoria,
+    trabajadorId,
+    tags,
+    areaDetected,
+    clienteId,
+  } = params;
   const ctx = await getUserContext(prisma, user);
   if (!ctx) return null;
 
@@ -956,12 +1355,263 @@ export async function updateTicketForUser(params: {
     data.trabajadorId = trabajadorId;
   }
 
+  if (tags !== undefined) {
+    data.tags = normalizeTags(tags);
+  }
+
+  if (areaDetected !== undefined) {
+    data.areaAsignada = areaFromDetected(areaDetected);
+  }
+
+  if (clienteId !== undefined) {
+    data.clienteId = clienteId;
+  }
+
+  // Timestamps de SLA derivados del cambio de estado.
+  const nuevoEstado = typeof data.estado === "string" ? data.estado : null;
+  if (nuevoEstado === "RESUELTO" || nuevoEstado === "CERRADO") {
+    if (!ticket.resolvedAt) data.resolvedAt = new Date();
+  } else if (nuevoEstado && ticket.resolvedAt) {
+    // Si se reabre, se limpia la marca de resolucion.
+    data.resolvedAt = null;
+  }
+
   if (Object.keys(data).length === 0) return ticket;
 
-  return prisma.ticket.update({
+  const updated = await prisma.ticket.update({
     where: { id_ticket: id },
     data,
   });
+
+  // Auditoria: un evento por cada cambio relevante.
+  if (nuevoEstado && nuevoEstado !== ticket.estado) {
+    await recordTicketEvent({
+      ticketId: id,
+      type: "ESTADO_CAMBIADO",
+      actorTrabajadorId: ctx.userId,
+      meta: { de: ticket.estado, a: nuevoEstado },
+    });
+  }
+
+  if (trabajadorId !== undefined && trabajadorId !== ticket.trabajadorId) {
+    await recordTicketEvent({
+      ticketId: id,
+      type: "AGENTE_ASIGNADO",
+      actorTrabajadorId: ctx.userId,
+      meta: { de: ticket.trabajadorId, a: trabajadorId },
+    });
+  }
+
+  if (
+    areaDetected !== undefined &&
+    data.areaAsignada !== ticket.areaAsignada
+  ) {
+    await recordTicketEvent({
+      ticketId: id,
+      type: "AREA_CAMBIADA",
+      actorTrabajadorId: ctx.userId,
+      meta: { de: ticket.areaAsignada, a: data.areaAsignada },
+    });
+  }
+
+  return updated;
+}
+
+/** Normaliza tags que pueden venir como array o como string separado por comas. */
+function normalizeTags(raw: string[] | string | null | undefined): string[] {
+  if (raw === null || raw === undefined) return [];
+  const list = Array.isArray(raw) ? raw : String(raw).split(",");
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of list) {
+    const value = String(item ?? "").trim();
+    if (!value) continue;
+    const key = value.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(value);
+  }
+  return out;
+}
+
+/**
+ * Registra un evento de auditoria del ticket.
+ * Nunca hace fallar la operacion principal: si el insert falla, solo se loguea.
+ */
+export async function recordTicketEvent(params: {
+  ticketId: number;
+  type: string;
+  actorTrabajadorId?: number | null;
+  meta?: Prisma.InputJsonValue | null;
+}) {
+  try {
+    await prisma.ticketEvent.create({
+      data: {
+        ticketId: params.ticketId,
+        type: params.type,
+        actorTrabajadorId: params.actorTrabajadorId ?? null,
+        meta: params.meta ?? Prisma.JsonNull,
+      },
+    });
+  } catch (err) {
+    console.error("recordTicketEvent error:", err);
+  }
+}
+
+export async function getTicketEventsForUser(
+  id: number,
+  user?: AuthJwtPayload
+): Promise<TicketEventDto[] | null> {
+  const access = await getTicketForAccess(id, user);
+  if (!access) return null;
+
+  const events = await prisma.ticketEvent.findMany({
+    where: { ticketId: id },
+    orderBy: { createdAt: "asc" },
+    include: {
+      actor: { select: { id_trabajador: true, nombre: true, email: true } },
+    },
+  });
+
+  return events.map((event) => ({
+    id: event.id,
+    type: event.type,
+    createdAt: event.createdAt.toISOString(),
+    actor: event.actor ?? null,
+    payload: (event.meta as Record<string, unknown> | null) ?? null,
+  }));
+}
+
+export type CreateTicketInput = {
+  subject?: string;
+  description?: string;
+  categoria?: string | null;
+  prioridad?: string | number | null;
+  requesterEmail?: string | null;
+  trabajadorId?: number | null;
+  areaDetected?: string | null;
+  tags?: string[] | string | null;
+  rutCliente?: string | null;
+};
+
+/**
+ * Crea un ticket manual (POST /api/tickets).
+ * El area sale de areaDetected; si no viene, del area del agente asignado.
+ */
+export async function createTicketForUser(params: {
+  user?: AuthJwtPayload;
+  payload: CreateTicketInput;
+  requestId?: string;
+}) {
+  const { user, payload, requestId } = params;
+  const ctx = await getUserContext(prisma, user);
+  if (!ctx) return null;
+
+  const auth = getAuthTrabajador(user);
+
+  const subject = String(payload.subject ?? "").trim();
+  const description = String(payload.description ?? "").trim();
+
+  if (!subject) throw new Error("El asunto es obligatorio");
+  if (!description) throw new Error("La descripcion es obligatoria");
+
+  const requesterEmail =
+    normalizeOptionalString(payload.requesterEmail) ?? auth?.email ?? "";
+
+  let areaAsignada: Area | null = areaFromDetected(payload.areaDetected);
+
+  // Sin area explicita, se hereda la del agente asignado.
+  if (!areaAsignada && payload.trabajadorId) {
+    const agente = await prisma.trabajador.findUnique({
+      where: { id_trabajador: payload.trabajadorId },
+      select: { areaInterna: true },
+    });
+    areaAsignada = agente?.areaInterna ?? null;
+  }
+
+  // Y si tampoco hay agente, la del propio creador.
+  if (!areaAsignada) areaAsignada = ctx.areaInterna;
+
+  // El RUT puede venir explicito o escrito dentro de la descripcion, que es
+  // como llega hoy desde el modal de creacion (no tiene selector de cliente).
+  const rutCliente =
+    normalizeOptionalString(payload.rutCliente) ??
+    findRutInText(`${subject} ${description}`);
+
+  const clienteId = await resolveClienteIdByRut(rutCliente);
+
+  const created = await prisma.ticket.create({
+    data: {
+      subject,
+      description,
+      categoria: normalizeOptionalString(payload.categoria) ?? "",
+      estado: "ABIERTO",
+      prioridad:
+        payload.prioridad === undefined || payload.prioridad === null
+          ? 2
+          : normalizePrioridadInput(payload.prioridad) ?? 2,
+      requesterEmail,
+      trabajadorId: payload.trabajadorId ?? null,
+      areaAsignada,
+      clienteId,
+      tags: normalizeTags(payload.tags),
+      source: TicketSource.MANUAL,
+    },
+    include: { trabajador: { select: { areaInterna: true } } },
+  });
+
+  await recordTicketEvent({
+    ticketId: created.id_ticket,
+    type: "TICKET_CREADO",
+    actorTrabajadorId: ctx.userId,
+    meta: { source: "MANUAL" },
+  });
+
+  logTicketInfo({
+    action: "tickets_create",
+    requestId,
+    userId: ctx.userId,
+    role: ctx.role,
+    meta: { ticketId: created.id_ticket, areaAsignada },
+  });
+
+  const resolved = resolveTicketArea(created);
+
+  const row: TicketRow = {
+    id: created.id_ticket,
+    number: created.id_ticket,
+    subject: created.subject,
+    requester: created.requesterEmail || "Sin correo",
+    requesterEmail: created.requesterEmail || "Sin correo",
+    preview: buildPreview(created.description),
+    group: toGroupLabel(created.categoria),
+    areaDetected: areaToDetected(created.areaAsignada ?? null),
+    areaSlug: resolved?.slug ?? null,
+    areaLabel: resolved?.name ?? null,
+    categoria: created.categoria ?? null,
+    tags: created.tags ?? [],
+    trabajadorId: created.trabajadorId ?? null,
+    status: toStatusLabel(created.estado),
+    priority: toPriorityLabel(created.prioridad),
+    createdAt: created.createdAt.toISOString(),
+  };
+
+  return row;
+}
+
+/** Busca el Cliente por RUT, tolerando los formatos que conviven en la base. */
+export async function resolveClienteIdByRut(
+  rut?: string | null
+): Promise<number | null> {
+  const candidates = rutCandidates(rut);
+  if (candidates.length === 0) return null;
+
+  const cliente = await prisma.cliente.findFirst({
+    where: { rut: { in: candidates } },
+    select: { id: true },
+  });
+
+  return cliente?.id ?? null;
 }
 
 

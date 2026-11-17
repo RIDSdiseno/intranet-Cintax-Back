@@ -1,10 +1,15 @@
+// src/routes/mailbox.routes.ts
+//
+// DESMONTADO (2026-11-13): este router ya no se monta. La linea que lo
+// montaba esta comentada en `src/routes.ts`, con el motivo y como revertirlo.
+// Nada de lo que hay aqui se ejecuta.
+
 import { Router } from "express";
 import multer from "multer";
 import {
   listMailboxThreads,
   getMailboxThread,
-  syncMailboxInbox,
-  replyMailboxThread, // ✅
+  replyMailboxThread, // 
 } from "../controllers/mailbox.controller";
 import { authGuard } from "../middlewares/auth.middleware";
 
@@ -22,6 +27,8 @@ router.post(
   replyMailboxThread
 );
 
-router.post("/sync", syncMailboxInbox);
+// La ingesta de correo -> tickets vive en POST /api/tickets/sync
+// (src/modules/tickets/email/ingestInbox.ts). La que estaba aqui solo
+// agregaba mensajes a tickets ya existentes y descartaba los correos nuevos.
 
 export default router;

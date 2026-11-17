@@ -1,9 +1,10 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.updateTicket = exports.createTicketMessage = exports.listTicketMessages = exports.replyTicketStub = exports.getTicketDetail = exports.syncTickets = exports.diagnosticTicketsInbox = exports.listTicketAgents = exports.listTicketsInbox = exports.listTickets = exports.listTicketGroups = void 0;
+exports.updateTicket = exports.listTicketEvents = exports.createTicket = exports.createTicketMessage = exports.listTicketMessages = exports.replyTicketStub = exports.getTicketDetail = exports.syncTickets = exports.diagnosticTicketsInbox = exports.listTicketAgents = exports.listTickets = exports.getTicketsSummary = exports.listTicketGroups = void 0;
 const client_1 = require("@prisma/client");
 const tickets_service_1 = require("./tickets.service");
 const ticketAccess_1 = require("./access/ticketAccess");
+const ingestInbox_1 = require("./email/ingestInbox");
 const tickets_logger_1 = require("./tickets.logger");
 function escapeHtml(input) {
     return String(input)
@@ -28,8 +29,10 @@ function getAuthMeta(req) {
 }
 const listTicketGroups = async (req, res) => {
     try {
+        const { view } = req.query;
         const data = await (0, tickets_service_1.getGroupsForUser)({
             user: req.user,
+            view,
             requestId: req.requestId,
         });
         return res.json({ ok: true, data });
@@ -47,15 +50,46 @@ const listTicketGroups = async (req, res) => {
     }
 };
 exports.listTicketGroups = listTicketGroups;
+/** GET /api/tickets/summary?area=&view= : totales + SLA global (solo lectura). */
+const getTicketsSummary = async (req, res) => {
+    try {
+        const { area, view } = req.query;
+        const data = await (0, tickets_service_1.getSummaryForUser)({
+            user: req.user,
+            area,
+            view,
+            requestId: req.requestId,
+        });
+        return res.json({ ok: true, data });
+    }
+    catch (err) {
+        const auth = getAuthMeta(req);
+        (0, tickets_logger_1.logTicketError)({
+            action: "tickets_summary",
+            requestId: auth.requestId,
+            userId: auth.userId,
+            role: auth.role,
+            error: err,
+        });
+        return res.status(500).json({ ok: false, error: "Error interno" });
+    }
+};
+exports.getTicketsSummary = getTicketsSummary;
 const listTickets = async (req, res) => {
     try {
-        const { area, q, status, priority, estado, prioridad } = req.query;
+        const { area, view, q, keywords, status, priority, estado, prioridad, asignado, solicitante, page, pageSize, } = req.query;
         const data = await (0, tickets_service_1.getTicketsForUser)({
             user: req.user,
             area,
+            view,
             q,
+            keywords,
             status: status ?? estado,
             priority: priority ?? prioridad,
+            asignado,
+            solicitante,
+            page: page ? Number(page) : undefined,
+            pageSize: pageSize ? Number(pageSize) : undefined,
             requestId: req.requestId,
         });
         return res.json({ ok: true, data });
@@ -73,37 +107,6 @@ const listTickets = async (req, res) => {
     }
 };
 exports.listTickets = listTickets;
-const listTicketsInbox = async (req, res) => {
-    try {
-        const { area, q, status, priority, estado, prioridad, } = req.query;
-        const limitRaw = Number(req.query.limit);
-        const limit = Number.isNaN(limitRaw)
-            ? 20
-            : Math.min(Math.max(limitRaw, 1), 100);
-        const data = await (0, tickets_service_1.getInboxForUser)({
-            user: req.user,
-            area,
-            q,
-            status: status ?? estado,
-            priority: priority ?? prioridad,
-            limit,
-            requestId: req.requestId,
-        });
-        return res.json({ ok: true, data });
-    }
-    catch (err) {
-        const auth = getAuthMeta(req);
-        (0, tickets_logger_1.logTicketError)({
-            action: "tickets_inbox",
-            requestId: auth.requestId,
-            userId: auth.userId,
-            role: auth.role,
-            error: err,
-        });
-        return res.status(500).json({ ok: false, error: "Error interno" });
-    }
-};
-exports.listTicketsInbox = listTicketsInbox;
 const listTicketAgents = async (req, res) => {
     try {
         if (!req.user) {
@@ -150,16 +153,51 @@ const diagnosticTicketsInbox = async (req, res) => {
     }
 };
 exports.diagnosticTicketsInbox = diagnosticTicketsInbox;
+/**
+ * POST /api/tickets/sync
+ * Lee la bandeja de soporte y crea/actualiza tickets desde los correos.
+ */
 const syncTickets = async (req, res) => {
+    const auth = getAuthMeta(req);
     try {
+        if (!(0, ticketAccess_1.isAdmin)(req.user)) {
+            return res.status(403).json({ ok: false, error: "Sin permisos" });
+        }
+        const { days, unreadOnly, markRead, maxThreads } = req.query;
+        const data = await (0, ingestInbox_1.ingestInbox)({
+            days: days ? Number(days) : undefined,
+            unreadOnly: unreadOnly === undefined ? undefined : unreadOnly !== "false",
+            markRead: markRead === undefined ? undefined : markRead !== "false",
+            maxThreads: maxThreads ? Number(maxThreads) : undefined,
+            requestId: req.requestId,
+            userId: auth.userId,
+        });
         return res.json({
             ok: true,
-            message: "Sincronizacion interna completada",
+            message: `Sincronizacion completada: ${data.createdTickets} ticket(s) nuevo(s), ${data.createdMessages} mensaje(s)`,
+            processed: data.scannedThreads,
+            data: {
+                processed: data.scannedThreads,
+                ingested: data.createdMessages,
+                createdTickets: data.createdTickets,
+                updatedThreads: data.updatedThreads,
+                duplicates: data.duplicates,
+                errors: data.errors,
+            },
         });
     }
     catch (err) {
-        console.error("syncTickets error:", err);
-        return res.status(500).json({ ok: false, error: "Error interno" });
+        (0, tickets_logger_1.logTicketError)({
+            action: "tickets_email_ingest",
+            requestId: auth.requestId,
+            userId: auth.userId,
+            role: auth.role,
+            error: err,
+        });
+        const message = err instanceof Error && err.message.includes("TICKETS_MAILBOX")
+            ? "Falta configurar TICKETS_MAILBOX en el entorno"
+            : "Error interno";
+        return res.status(500).json({ ok: false, error: message });
     }
 };
 exports.syncTickets = syncTickets;
@@ -181,7 +219,7 @@ const getTicketDetail = async (req, res) => {
             role: auth.role,
             ticketId: id,
             meta: {
-                threadMessages: detail.messages.length,
+                estado: detail.ticket.estado,
                 firstResponseStatus: detail.ticket.firstResponseStatus,
                 resolutionStatus: detail.ticket.resolutionStatus,
             },
@@ -216,7 +254,7 @@ const replyTicketStub = async (req, res) => {
         }
         const safeBody = body.trim();
         const bodyHtml = escapeHtml(safeBody).replace(/\r?\n/g, "<br />");
-        const created = await (0, tickets_service_1.createTicketMessageForUser)({
+        const result = await (0, tickets_service_1.createTicketMessageForUser)({
             id,
             user: req.user,
             payload: {
@@ -224,9 +262,10 @@ const replyTicketStub = async (req, res) => {
                 bodyHtml,
             },
         });
-        if (!created) {
+        if (!result) {
             return res.status(404).json({ ok: false, error: "Ticket no encontrado" });
         }
+        const created = result.message;
         const auth = getAuthMeta(req);
         (0, tickets_logger_1.logTicketInfo)({
             action: "ticket_message_create",
@@ -238,11 +277,14 @@ const replyTicketStub = async (req, res) => {
                 type: client_1.TicketMessageType.PUBLIC_REPLY,
                 toEmail: created.toEmail ?? null,
                 bodyHtmlLength: bodyHtml.length,
+                emailStatus: result.emailStatus,
             },
         });
         return res.status(201).json({
             ok: true,
             data: created,
+            emailStatus: result.emailStatus,
+            emailError: result.emailError,
             message: "Respuesta registrada",
         });
     }
@@ -320,7 +362,8 @@ const createTicketMessage = async (req, res) => {
                 .status(400)
                 .json({ ok: false, error: "Mensaje vacio o sin contenido util" });
         }
-        const created = await (0, tickets_service_1.createTicketMessageForUser)({
+        const files = req.files ?? [];
+        const result = await (0, tickets_service_1.createTicketMessageForUser)({
             id,
             user: req.user,
             payload: {
@@ -331,11 +374,16 @@ const createTicketMessage = async (req, res) => {
                 subject,
                 bodyHtml: bodyHtml.trim(),
             },
+            attachments: files.map((file) => ({
+                originalname: file.originalname,
+                mimetype: file.mimetype,
+                buffer: file.buffer,
+            })),
         });
-        if (!created) {
+        if (!result) {
             return res.status(404).json({ ok: false, error: "Ticket no encontrado" });
         }
-        const emailConfigured = Boolean(process.env.SMTP_HOST || process.env.SENDGRID_API_KEY);
+        const created = result.message;
         const auth = getAuthMeta(req);
         (0, tickets_logger_1.logTicketInfo)({
             action: "ticket_message_create",
@@ -349,14 +397,21 @@ const createTicketMessage = async (req, res) => {
                 cc: created.cc ?? null,
                 bcc: created.bcc ?? null,
                 bodyHtmlLength: bodyHtml.trim().length,
+                attachments: files.length,
+                emailStatus: result.emailStatus,
             },
         });
+        const mensajePorEstado = {
+            SENT: "Mensaje enviado",
+            SKIPPED: "Nota interna guardada (no se envia correo)",
+            FAILED: "Mensaje guardado, pero fallo el envio del correo",
+        };
         return res.status(201).json({
             ok: true,
             data: created,
-            message: emailConfigured
-                ? "Envio pendiente de integracion"
-                : "Mensaje guardado (envio pendiente)",
+            message: mensajePorEstado[result.emailStatus],
+            emailStatus: result.emailStatus,
+            emailError: result.emailError,
         });
     }
     catch (err) {
@@ -383,13 +438,79 @@ const createTicketMessage = async (req, res) => {
     }
 };
 exports.createTicketMessage = createTicketMessage;
+/** POST /api/tickets — crea un ticket manual. */
+const createTicket = async (req, res) => {
+    const auth = getAuthMeta(req);
+    try {
+        const row = await (0, tickets_service_1.createTicketForUser)({
+            user: req.user,
+            payload: req.body ?? {},
+            requestId: req.requestId,
+        });
+        if (!row) {
+            return res.status(403).json({ ok: false, error: "Sin permisos" });
+        }
+        return res.status(201).json({ ok: true, data: row });
+    }
+    catch (err) {
+        // Errores de validacion vuelven como 400, no como 500.
+        const message = err instanceof Error ? err.message : "Error interno";
+        const isValidation = message.includes("obligatori") || message.includes("invalid");
+        (0, tickets_logger_1.logTicketError)({
+            action: "tickets_create",
+            requestId: auth.requestId,
+            userId: auth.userId,
+            role: auth.role,
+            error: err,
+        });
+        return res
+            .status(isValidation ? 400 : 500)
+            .json({ ok: false, error: isValidation ? message : "Error interno" });
+    }
+};
+exports.createTicket = createTicket;
+/** GET /api/tickets/:id/events — historial de auditoria del ticket. */
+const listTicketEvents = async (req, res) => {
+    const auth = getAuthMeta(req);
+    try {
+        const id = Number(req.params.id);
+        if (Number.isNaN(id)) {
+            return res.status(400).json({ ok: false, error: "ID invalido" });
+        }
+        const data = await (0, tickets_service_1.getTicketEventsForUser)(id, req.user);
+        if (!data) {
+            return res.status(404).json({ ok: false, error: "Ticket no encontrado" });
+        }
+        (0, tickets_logger_1.logTicketInfo)({
+            action: "ticket_events_list",
+            requestId: auth.requestId,
+            userId: auth.userId,
+            role: auth.role,
+            ticketId: id,
+            meta: { count: data.length },
+        });
+        return res.json({ ok: true, data });
+    }
+    catch (err) {
+        (0, tickets_logger_1.logTicketError)({
+            action: "ticket_events_list",
+            requestId: auth.requestId,
+            userId: auth.userId,
+            role: auth.role,
+            ticketId: Number(req.params.id),
+            error: err,
+        });
+        return res.status(500).json({ ok: false, error: "Error interno" });
+    }
+};
+exports.listTicketEvents = listTicketEvents;
 const updateTicket = async (req, res) => {
     try {
         const id = Number(req.params.id);
         if (Number.isNaN(id)) {
             return res.status(400).json({ ok: false, error: "ID invalido" });
         }
-        const { status, priority, estado, prioridad, categoria, trabajadorId } = req.body;
+        const { status, priority, estado, prioridad, categoria, trabajadorId, tags, areaDetected, clienteId, } = req.body;
         const changes = {};
         const normalizedEstado = estado ?? status;
         const normalizedPrioridad = prioridad ?? priority;
@@ -401,6 +522,12 @@ const updateTicket = async (req, res) => {
             changes.categoria = categoria;
         if (trabajadorId !== undefined)
             changes.trabajadorId = trabajadorId;
+        if (tags !== undefined)
+            changes.tags = tags;
+        if (areaDetected !== undefined)
+            changes.areaDetected = areaDetected;
+        if (clienteId !== undefined)
+            changes.clienteId = clienteId;
         const auth = getAuthMeta(req);
         if (Object.keys(changes).length === 0) {
             (0, tickets_logger_1.logTicketWarn)({
@@ -422,6 +549,9 @@ const updateTicket = async (req, res) => {
             prioridad: normalizedPrioridad,
             categoria,
             trabajadorId,
+            tags,
+            areaDetected,
+            clienteId,
         });
         if (!updated) {
             return res.status(404).json({ ok: false, error: "Ticket no encontrado" });

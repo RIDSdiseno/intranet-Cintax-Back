@@ -1,12 +1,16 @@
 export type TicketLogAction =
   | "tickets_groups"
+  | "tickets_summary"
   | "tickets_list"
   | "tickets_inbox"
   | "ticket_detail"
   | "ticket_messages_list"
   | "ticket_message_create"
   | "ticket_update"
-  | "tickets_agents_list";
+  | "tickets_agents_list"
+  | "tickets_create"
+  | "ticket_events_list"
+  | "tickets_email_ingest";
 
 type TicketLogPayload = {
   action: TicketLogAction;

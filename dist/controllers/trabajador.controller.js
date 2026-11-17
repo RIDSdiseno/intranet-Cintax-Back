@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.updateTrabajador = exports.listTrabajadores = void 0;
+exports.listTrabajadoresLite = exports.updateTrabajador = exports.listTrabajadores = void 0;
 const client_1 = require("@prisma/client");
 const prisma = new client_1.PrismaClient();
 /* =========================
@@ -222,4 +222,20 @@ const updateTrabajador = async (req, res) => {
     }
 };
 exports.updateTrabajador = updateTrabajador;
+// ✅ GET /api/trabajadores/lite
+const listTrabajadoresLite = async (_req, res) => {
+    try {
+        const rows = await prisma.trabajador.findMany({
+            where: { status: true },
+            select: { id_trabajador: true, nombre: true, email: true },
+            orderBy: { nombre: "asc" },
+        });
+        return res.json(rows);
+    }
+    catch (err) {
+        console.error("listTrabajadoresLite error:", err);
+        return res.status(500).json({ error: "Error interno listando trabajadores (lite)" });
+    }
+};
+exports.listTrabajadoresLite = listTrabajadoresLite;
 //# sourceMappingURL=trabajador.controller.js.map

@@ -135,12 +135,19 @@ function getDestinationEmails(ticket: Record<string, unknown>): string[] {
 }
 
 export function resolveTicketArea(ticket: {
+  areaAsignada?: Area | null;
   trabajador?: { areaInterna?: Area | null } | null;
   categoria?: string | null;
   subject?: string | null;
   description?: string | null;
   [key: string]: unknown;
 }): TicketArea | null {
+  // 1) El area explicita de la columna manda sobre cualquier heuristica.
+  const areaAsignada = ticket.areaAsignada ?? null;
+  if (areaAsignada && AREA_UI_MAP[areaAsignada]) {
+    return AREA_UI_MAP[areaAsignada];
+  }
+
   const areaInterna = ticket.trabajador?.areaInterna ?? null;
   if (areaInterna && AREA_UI_MAP[areaInterna]) {
     return AREA_UI_MAP[areaInterna];
@@ -169,4 +176,23 @@ export function areaFromSlug(slug: string) {
 export function areaToSlug(area?: Area | null) {
   if (!area) return null;
   return AREA_UI_MAP[area]?.slug ?? null;
+}
+
+/** Area del enum -> etiqueta que usa la UI (areaDetected). */
+export function areaToDetected(
+  area?: Area | null
+): "CONTABLE" | "TRIBUTARIA" | "LABORAL" | "SIN_CLASIFICAR" {
+  if (area === Area.CONTA) return "CONTABLE";
+  if (area === Area.TRIBUTARIO) return "TRIBUTARIA";
+  if (area === Area.RRHH) return "LABORAL";
+  return "SIN_CLASIFICAR";
+}
+
+/** areaDetected que manda la UI -> Area del enum (null = sin clasificar). */
+export function areaFromDetected(raw?: string | null): Area | null {
+  const value = String(raw ?? "").trim().toUpperCase();
+  if (value === "CONTABLE") return Area.CONTA;
+  if (value === "TRIBUTARIA") return Area.TRIBUTARIO;
+  if (value === "LABORAL") return Area.RRHH;
+  return null;
 }

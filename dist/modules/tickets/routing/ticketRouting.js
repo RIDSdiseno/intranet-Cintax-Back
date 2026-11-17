@@ -4,6 +4,8 @@ exports.resolveTicketArea = resolveTicketArea;
 exports.getAreaChips = getAreaChips;
 exports.areaFromSlug = areaFromSlug;
 exports.areaToSlug = areaToSlug;
+exports.areaToDetected = areaToDetected;
+exports.areaFromDetected = areaFromDetected;
 const client_1 = require("@prisma/client");
 const AREA_UI_MAP = {
     CONTA: { area: client_1.Area.CONTA, slug: "contabilidad", name: "Contabilidad" },
@@ -126,6 +128,11 @@ function getDestinationEmails(ticket) {
     return emails;
 }
 function resolveTicketArea(ticket) {
+    // 1) El area explicita de la columna manda sobre cualquier heuristica.
+    const areaAsignada = ticket.areaAsignada ?? null;
+    if (areaAsignada && AREA_UI_MAP[areaAsignada]) {
+        return AREA_UI_MAP[areaAsignada];
+    }
     const areaInterna = ticket.trabajador?.areaInterna ?? null;
     if (areaInterna && AREA_UI_MAP[areaInterna]) {
         return AREA_UI_MAP[areaInterna];
@@ -151,5 +158,26 @@ function areaToSlug(area) {
     if (!area)
         return null;
     return AREA_UI_MAP[area]?.slug ?? null;
+}
+/** Area del enum -> etiqueta que usa la UI (areaDetected). */
+function areaToDetected(area) {
+    if (area === client_1.Area.CONTA)
+        return "CONTABLE";
+    if (area === client_1.Area.TRIBUTARIO)
+        return "TRIBUTARIA";
+    if (area === client_1.Area.RRHH)
+        return "LABORAL";
+    return "SIN_CLASIFICAR";
+}
+/** areaDetected que manda la UI -> Area del enum (null = sin clasificar). */
+function areaFromDetected(raw) {
+    const value = String(raw ?? "").trim().toUpperCase();
+    if (value === "CONTABLE")
+        return client_1.Area.CONTA;
+    if (value === "TRIBUTARIA")
+        return client_1.Area.TRIBUTARIO;
+    if (value === "LABORAL")
+        return client_1.Area.RRHH;
+    return null;
 }
 //# sourceMappingURL=ticketRouting.js.map

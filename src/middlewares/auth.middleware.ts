@@ -10,7 +10,7 @@ export type AuthJwtPayload = {
   nombre: string;
   email: string;
 
-  // ✅ lo que tu app necesita para permisos
+  // lo que tu app necesita para permisos
   role: Role;
 
   // opcionales útiles (si los usas)
@@ -19,7 +19,44 @@ export type AuthJwtPayload = {
   // flags calculados en login
   isSupervisorOrAdmin?: boolean;
   isAdmin?: boolean;
+
+  /**
+   * Solo para que el front decida si dibuja el menu de Informes.
+   * El backend NO se fia de este flag: `soloInformes` vuelve a calcularlo
+   * desde el correo y la lista del .env en cada request.
+   */
+  puedeVerInformes?: boolean;
 };
+
+/**
+ * Si este usuario cuenta como supervisor o admin.
+ *
+ * Una sola definicion para dos usos distintos: el middleware de mas abajo,
+ * que corta el paso, y los controladores que tienen que ramificar por dentro.
+ * Esos existen porque hay endpoints que usa todo el mundo y donde el rol no
+ * decide el acceso sino el alcance: en `actualizarEstado` un agente solo
+ * puede tocar su propia tarea y un supervisor cualquiera.
+ *
+ * Copiar la condicion en cada controlador es como se desincronizan los
+ * permisos: alguien cambia quien es supervisor en un sitio y quedan cinco
+ * copias con la regla vieja.
+ *
+ * Acepta a los mismos que `SupervisorRoute` en el front (`AppRoutes.tsx`), y
+ * eso es deliberado: si el backend fuera mas estricto habria pantallas que se
+ * abren y despues fallan al pedir los datos.
+ */
+export function esSupervisorOAdmin(user?: {
+  role?: Role;
+  isSupervisorOrAdmin?: boolean;
+}): boolean {
+  if (!user) return false;
+
+  return (
+    user.role === "ADMIN" ||
+    user.role === "SUPERVISOR" ||
+    user.isSupervisorOrAdmin === true
+  );
+}
 
 // Nunca uses "dev_secret" en producción
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -31,7 +68,7 @@ if (!JWT_SECRET) {
 declare global {
   namespace Express {
     interface Request {
-      user?: AuthJwtPayload; // ✅ ahora incluye role
+      user?: AuthJwtPayload; // ahora incluye role
       token?: string;
     }
   }
@@ -59,12 +96,12 @@ export const authGuard: RequestHandler = (
   try {
     const payload = jwt.verify(token, JWT_SECRET) as AuthJwtPayload;
 
-    // ✅ hardening mínimo: si no viene role, lo normalizamos a AGENTE
+    // hardening mínimo: si no viene role, lo normalizamos a AGENTE
     if (!payload.role) {
       payload.role = "AGENTE";
     }
 
-    // ✅ también puedes recalcular flags aquí si quieres consistencia
+    // también puedes recalcular flags aquí si quieres consistencia
     payload.isAdmin = payload.role === "ADMIN";
     payload.isSupervisorOrAdmin =
       payload.role === "ADMIN" || payload.role === "SUPERVISOR";
@@ -100,12 +137,7 @@ export const requireSupervisorOrAdmin: RequestHandler = (
     return res.status(401).json({ error: "No autenticado" });
   }
 
-  const ok =
-    req.user.role === "ADMIN" ||
-    req.user.role === "SUPERVISOR" ||
-    req.user.isSupervisorOrAdmin === true;
-
-  if (!ok) {
+  if (!esSupervisorOAdmin(req.user)) {
     return res.status(403).json({
       error: "No tienes permisos para acceder a esta sección (solo supervisores/admin)",
     });

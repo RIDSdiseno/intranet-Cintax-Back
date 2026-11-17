@@ -1,13 +1,49 @@
 "use strict";
 // src/controllers/tareas.controller.ts
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getTareasPorRuts = exports.getTareasAsignadasPorClienteYTrabajador = exports.eliminarPlantillaConTareas = exports.upsertClienteTareaExclusion = exports.listPlantillasConAplicaPorCliente = exports.subirArchivo = exports.ensureDriveFolder = exports.getResumenSupervision = exports.actualizarEstado = exports.crearTareasDesdePlantilla = exports.getTareasPorPlantilla = exports.crearPlantilla = exports.getPlantillas = exports.getTareasPorRut = exports.getMisRuts = void 0;
+exports.getTareasDesactivadas = exports.desactivarTareasSupervision = exports.getTareasPorRuts = exports.getTareasAsignadasPorClienteYTrabajador = exports.eliminarPlantillaConTareas = exports.upsertClienteTareaExclusion = exports.listPlantillasConAplicaPorCliente = exports.subirArchivo = exports.ensureDriveFolder = exports.getResumenSupervision = exports.actualizarEstado = exports.crearTareasDesdePlantilla = exports.getTareasPorPlantilla = exports.crearPlantilla = exports.getPlantillas = exports.getTareasPorRut = exports.getMisRuts = void 0;
+exports.reactivarTareasSupervision = reactivarTareasSupervision;
 const prisma_1 = require("../lib/prisma");
+const auth_middleware_1 = require("../middlewares/auth.middleware");
 const driveContaTasks_1 = require("../services/driveContaTasks");
 const client_1 = require("@prisma/client");
 const googleDrive_1 = require("../lib/googleDrive");
 const stream_1 = require("stream");
 const normNombrePlantilla_1 = require("../utils/normNombrePlantilla");
+const fs = __importStar(require("fs"));
 // Helper para convertir Buffer → ReadableStream
 function bufferToStream(buffer) {
     const readable = new stream_1.Readable();
@@ -100,8 +136,9 @@ const getTareasPorRut = async (req, res) => {
             if (Number.isNaN(year) || Number.isNaN(month) || month < 1 || month > 12) {
                 return res.status(400).json({ message: "anio/mes inválidos. Ej: ?anio=2025&mes=12" });
             }
-            const inicio = new Date(year, month - 1, 1);
-            const fin = new Date(year, month, 1);
+            // Usar UTC para ser consistente con fechas almacenadas como UTC midnight
+            const inicio = new Date(Date.UTC(year, month - 1, 1));
+            const fin = new Date(Date.UTC(year, month, 1));
             fechaFiltro = { gte: inicio, lt: fin };
         }
         const where = {
@@ -274,8 +311,9 @@ const getTareasPorPlantilla = async (req, res) => {
             if (Number.isNaN(year) || Number.isNaN(month) || month < 1 || month > 12) {
                 return res.status(400).json({ message: "anio/mes inválidos. Ejemplo: ?anio=2025&mes=1" });
             }
-            const inicio = new Date(year, month - 1, 1);
-            const fin = new Date(year, month, 1);
+            // Usar UTC para ser consistente con fechas almacenadas como UTC midnight
+            const inicio = new Date(Date.UTC(year, month - 1, 1));
+            const fin = new Date(Date.UTC(year, month, 1));
             fechaFiltro = { gte: inicio, lt: fin };
         }
         const where = {
@@ -404,6 +442,8 @@ exports.crearTareasDesdePlantilla = crearTareasDesdePlantilla;
 // ---------------------------------------------------------------------------
 const actualizarEstado = async (req, res) => {
     try {
+        if (!req.user?.id)
+            return res.status(401).json({ message: "No autorizado" });
         const { id } = req.params;
         const { estado, fechaComplecion } = req.body;
         if (!id || !estado) {
@@ -412,6 +452,38 @@ const actualizarEstado = async (req, res) => {
         const idTarea = Number(id);
         if (Number.isNaN(idTarea))
             return res.status(400).json({ message: "ID inválido" });
+        // Solo se cambia el estado de una tarea propia.
+        //
+        // El `update` de mas abajo busca por `id_tarea_asignada` y nada mas, asi
+        // que sin esta comprobacion cualquier trabajador con sesion cerraba o
+        // reabria la tarea de cualquiera mandando el numero. No hacia falta
+        // ninguna herramienta: es una peticion desde la consola del navegador.
+        //
+        // Importa mas de lo que parece porque los informes cuentan exactamente
+        // estos estados (`modules/informes/datos.ts`). Un estado cambiado por
+        // quien no debia convierte el informe que lee la administracion en un
+        // dato falso, y sin rastro de por que.
+        //
+        // A los supervisores se les deja pasar como hasta ahora. Para cerrar
+        // tareas ajenas tienen `/tareas/supervision/completar`, que si lleva
+        // guard de rol; este se les respeta para no cambiarles ningun flujo.
+        //
+        // `trabajadorId` es nullable: una tarea sin asignar no es de nadie, y
+        // tampoco se puede tomar cambiandole el estado.
+        if (!(0, auth_middleware_1.esSupervisorOAdmin)(req.user)) {
+            const tarea = await prisma_1.prisma.tareaAsignada.findUnique({
+                where: { id_tarea_asignada: idTarea },
+                select: { trabajadorId: true },
+            });
+            if (!tarea) {
+                return res.status(404).json({ message: "Tarea no encontrada" });
+            }
+            if (tarea.trabajadorId !== req.user.id) {
+                return res
+                    .status(403)
+                    .json({ message: "Solo puedes cambiar el estado de tus propias tareas" });
+            }
+        }
         const dataUpdate = { estado };
         // Manejo fechaComplecion
         if (estado === "COMPLETADA") {
@@ -530,35 +602,80 @@ exports.ensureDriveFolder = ensureDriveFolder;
 // ---------------------------------------------------------------------------
 const subirArchivo = async (req, res) => {
     try {
-        if (!req.user?.id)
+        if (!req.user?.id) {
             return res.status(401).json({ message: "No autorizado" });
+        }
         const idTarea = Number(req.params.id);
-        if (Number.isNaN(idTarea))
+        if (!Number.isFinite(idTarea) || idTarea <= 0) {
             return res.status(400).json({ message: "ID de tarea inválido" });
+        }
         const file = req.file;
-        if (!file)
+        if (!file) {
             return res.status(400).json({ message: "No se recibió ningún archivo" });
+        }
         const tarea = await prisma_1.prisma.tareaAsignada.findUnique({
             where: { id_tarea_asignada: idTarea },
-            include: { tareaPlantilla: true, asignado: true },
+            include: {
+                tareaPlantilla: true,
+                asignado: true,
+            },
         });
-        if (!tarea)
+        if (!tarea) {
             return res.status(404).json({ message: "Tarea no encontrada" });
+        }
+        // Solo el dueño de la tarea puede subir archivo
+        if (tarea.trabajadorId !== req.user.id) {
+            return res.status(403).json({
+                message: "No tienes permiso para subir archivos a esta tarea",
+            });
+        }
         if (tarea.tareaPlantilla?.area !== client_1.Area.CONTA) {
             return res.status(400).json({
                 message: "Solo se soporta subida de archivos para tareas del área CONTA",
             });
         }
+        console.log("[subirArchivo] inicio", {
+            idTarea,
+            userId: req.user.id,
+            trabajadorIdTarea: tarea.trabajadorId,
+            plantillaArea: tarea.tareaPlantilla?.area,
+            originalname: file.originalname,
+            mimetype: file.mimetype,
+            size: file.size,
+            hasBuffer: !!file.buffer,
+            hasPath: !!file.path,
+        });
         const folderId = await (0, driveContaTasks_1.ensureContaTaskFolderForTareaAsignada)(idTarea);
         const drive = (0, googleDrive_1.getAdminDriveClient)();
+        let mediaBody;
+        if (file.buffer && file.buffer.length > 0) {
+            mediaBody = bufferToStream(file.buffer);
+        }
+        else if (file.path) {
+            mediaBody = fs.createReadStream(file.path);
+        }
+        else {
+            return res.status(500).json({
+                message: "No se pudo obtener el contenido del archivo para subirlo",
+            });
+        }
         const uploadRes = await drive.files.create({
             requestBody: {
                 name: file.originalname,
                 mimeType: file.mimetype,
                 parents: [folderId],
             },
-            media: { mimeType: file.mimetype, body: bufferToStream(file.buffer) },
+            media: {
+                mimeType: file.mimetype,
+                body: mediaBody,
+            },
             fields: "id, webViewLink, webContentLink, name",
+        });
+        console.log("[subirArchivo] upload ok", {
+            tareaId: idTarea,
+            driveFolderId: folderId,
+            driveFileId: uploadRes.data.id,
+            driveFileName: uploadRes.data.name,
         });
         return res.status(201).json({
             message: "Archivo subido correctamente",
@@ -570,8 +687,16 @@ const subirArchivo = async (req, res) => {
         });
     }
     catch (error) {
-        console.error("[subirArchivo] error:", error);
-        return res.status(500).json({ message: "Error subiendo archivo de tarea" });
+        console.error("[subirArchivo] error:", {
+            message: error?.message,
+            stack: error?.stack,
+            response: error?.response?.data,
+            errors: error?.errors,
+        });
+        return res.status(500).json({
+            message: "Error subiendo archivo de tarea",
+            detail: error?.message ?? "unknown",
+        });
     }
 };
 exports.subirArchivo = subirArchivo;
@@ -871,7 +996,6 @@ const getTareasPorRuts = async (req, res) => {
         if (!req.user?.id)
             return res.status(401).json({ message: "No autorizado" });
         const body = (req.body ?? {});
-        // trabajadorId: si viene en body úsalo, si no usa el del token
         let trabajadorId;
         if (body.trabajadorId != null) {
             const parsed = Number(body.trabajadorId);
@@ -887,7 +1011,7 @@ const getTareasPorRuts = async (req, res) => {
         if (ruts.length === 0) {
             return res.json({ tareas: [] });
         }
-        // Filtro opcional por año/mes
+        const includeNoAplica = body.includeNoAplica === true || String(body.includeNoAplica) === "true";
         let fechaFiltro;
         if (body.anio != null && body.mes != null) {
             const year = Number(body.anio);
@@ -895,18 +1019,21 @@ const getTareasPorRuts = async (req, res) => {
             if (Number.isNaN(year) || Number.isNaN(month) || month < 1 || month > 12) {
                 return res.status(400).json({ message: "anio/mes inválidos. Ej: { anio: 2025, mes: 12 }" });
             }
-            const inicio = new Date(year, month - 1, 1);
-            const fin = new Date(year, month, 1);
+            // Usar UTC para ser consistente con fechas almacenadas como UTC midnight
+            const inicio = new Date(Date.UTC(year, month - 1, 1));
+            const fin = new Date(Date.UTC(year, month, 1));
             fechaFiltro = { gte: inicio, lt: fin };
         }
         const where = {
             trabajadorId,
             rutCliente: { in: ruts },
-            estado: { not: "NO_APLICA" },
         };
-        if (fechaFiltro)
+        if (!includeNoAplica) {
+            where.estado = { not: "NO_APLICA" };
+        }
+        if (fechaFiltro) {
             where.fechaProgramada = fechaFiltro;
-        // ✅ IMPORTANTE: select en vez de include completo (menos payload)
+        }
         const tareas = await prisma_1.prisma.tareaAsignada.findMany({
             where,
             orderBy: [{ rutCliente: "asc" }, { fechaProgramada: "asc" }],
@@ -923,4 +1050,251 @@ const getTareasPorRuts = async (req, res) => {
     }
 };
 exports.getTareasPorRuts = getTareasPorRuts;
+const desactivarTareasSupervision = async (req, res) => {
+    try {
+        if (!req.user?.id) {
+            return res.status(401).json({ message: "No autorizado" });
+        }
+        const body = (req.body ?? {});
+        const comentario = String(body.comentario ?? "").trim();
+        // =========================================================
+        // CASO 1: desactivar por IDs seleccionados
+        // =========================================================
+        if (Array.isArray(body.tareaIds) && body.tareaIds.length > 0) {
+            const tareaIds = Array.from(new Set(body.tareaIds
+                .map((id) => Number(id))
+                .filter((id) => Number.isFinite(id) && id > 0)));
+            if (tareaIds.length === 0) {
+                return res.status(400).json({ message: "tareaIds inválidos" });
+            }
+            const result = await prisma_1.prisma.tareaAsignada.updateMany({
+                where: {
+                    id_tarea_asignada: { in: tareaIds },
+                    estado: { notIn: ["COMPLETADA", "NO_APLICA"] },
+                },
+                data: {
+                    estado: "NO_APLICA",
+                    comentarios: comentario || undefined,
+                    fechaComplecion: null,
+                },
+            });
+            return res.json({
+                message: "Tareas desactivadas correctamente",
+                count: result.count,
+            });
+        }
+        // =========================================================
+        // CASO 2: desactivar por filtros
+        // =========================================================
+        const trabajadorId = Number(body.trabajadorId);
+        if (!Number.isFinite(trabajadorId) || trabajadorId <= 0) {
+            return res.status(400).json({ message: "trabajadorId es obligatorio" });
+        }
+        const rutCliente = body.rutCliente
+            ? String(body.rutCliente).trim()
+            : undefined;
+        const anio = Number(body.anio);
+        const mes = Number(body.mes);
+        if (!Number.isFinite(anio) || !Number.isFinite(mes) || mes < 1 || mes > 12) {
+            return res.status(400).json({ message: "anio/mes inválidos" });
+        }
+        const inicio = new Date(anio, mes - 1, 1);
+        const fin = new Date(anio, mes, 1);
+        const estadosObjetivo = [];
+        if (body.incluirPendientes)
+            estadosObjetivo.push("PENDIENTE");
+        if (body.incluirEnProceso)
+            estadosObjetivo.push("EN_PROCESO");
+        if (body.incluirVencidas)
+            estadosObjetivo.push("VENCIDA");
+        if (estadosObjetivo.length === 0) {
+            return res.status(400).json({
+                message: "Debes indicar al menos un tipo de estado a desactivar",
+            });
+        }
+        const where = {
+            trabajadorId,
+            fechaProgramada: {
+                gte: inicio,
+                lt: fin,
+            },
+            estado: {
+                in: estadosObjetivo,
+            },
+        };
+        if (rutCliente) {
+            where.rutCliente = rutCliente;
+        }
+        const result = await prisma_1.prisma.tareaAsignada.updateMany({
+            where,
+            data: {
+                estado: "NO_APLICA",
+                comentarios: comentario || undefined,
+                fechaComplecion: null,
+            },
+        });
+        return res.json({
+            message: "Tareas desactivadas correctamente",
+            count: result.count,
+        });
+    }
+    catch (error) {
+        console.error("[desactivarTareasSupervision] error:", error);
+        return res.status(500).json({ message: "Error desactivando tareas" });
+    }
+};
+exports.desactivarTareasSupervision = desactivarTareasSupervision;
+// ---------------------------------------------------------------------------
+// 2.C) Obtener tareas desactivadas (NO_APLICA) por trabajador / ruts
+//    POST /tareas/desactivadas
+//    body: { trabajadorId?, ruts?: string[], anio?, mes? }
+// ---------------------------------------------------------------------------
+const getTareasDesactivadas = async (req, res) => {
+    try {
+        if (!req.user?.id) {
+            return res.status(401).json({ message: "No autorizado" });
+        }
+        const body = (req.body ?? {});
+        let trabajadorId;
+        if (body.trabajadorId != null) {
+            const parsed = Number(body.trabajadorId);
+            if (Number.isNaN(parsed) || parsed <= 0) {
+                return res.status(400).json({ message: "trabajadorId inválido" });
+            }
+            trabajadorId = parsed;
+        }
+        else {
+            trabajadorId = req.user.id;
+        }
+        const ruts = Array.from(new Set((body.ruts ?? []).map((r) => String(r ?? "").trim()).filter(Boolean)));
+        let fechaFiltro;
+        if (body.anio != null && body.mes != null) {
+            const year = Number(body.anio);
+            const month = Number(body.mes);
+            if (Number.isNaN(year) || Number.isNaN(month) || month < 1 || month > 12) {
+                return res.status(400).json({
+                    message: "anio/mes inválidos. Ej: { anio: 2026, mes: 3 }",
+                });
+            }
+            // Usar UTC para ser consistente con fechas almacenadas como UTC midnight
+            const inicio = new Date(Date.UTC(year, month - 1, 1));
+            const fin = new Date(Date.UTC(year, month, 1));
+            fechaFiltro = { gte: inicio, lt: fin };
+        }
+        const where = {
+            trabajadorId,
+            estado: "NO_APLICA",
+        };
+        if (ruts.length > 0) {
+            where.rutCliente = { in: ruts };
+        }
+        if (fechaFiltro) {
+            where.fechaProgramada = fechaFiltro;
+        }
+        const tareas = await prisma_1.prisma.tareaAsignada.findMany({
+            where,
+            orderBy: [{ rutCliente: "asc" }, { fechaProgramada: "asc" }],
+            include: {
+                tareaPlantilla: true,
+                asignado: {
+                    select: {
+                        id_trabajador: true,
+                        nombre: true,
+                        email: true,
+                    },
+                },
+            },
+        });
+        return res.json({
+            tareas,
+            count: tareas.length,
+        });
+    }
+    catch (error) {
+        console.error("[getTareasDesactivadas] error:", error);
+        return res.status(500).json({ message: "Error obteniendo tareas desactivadas" });
+    }
+};
+exports.getTareasDesactivadas = getTareasDesactivadas;
+async function reactivarTareasSupervision(req, res, next) {
+    try {
+        const { tareaIds, trabajadorId, rutCliente, rutClientes, tareaPlantillaId, anio, mes, comentario, } = req.body;
+        const where = {
+            estado: "NO_APLICA",
+        };
+        if (Array.isArray(tareaIds) && tareaIds.length > 0) {
+            where.id_tarea_asignada = {
+                in: tareaIds.map(Number).filter((n) => !Number.isNaN(n)),
+            };
+        }
+        else {
+            if (trabajadorId) {
+                where.trabajadorId = Number(trabajadorId);
+            }
+            const rutsFinales = [
+                ...(rutCliente ? [rutCliente] : []),
+                ...(Array.isArray(rutClientes) ? rutClientes : []),
+            ].filter(Boolean);
+            if (rutsFinales.length > 0) {
+                where.rutCliente = { in: rutsFinales };
+            }
+            if (tareaPlantillaId) {
+                where.tareaPlantillaId = Number(tareaPlantillaId);
+            }
+            if (anio && mes) {
+                const fechaDesde = new Date(Number(anio), Number(mes) - 1, 1, 0, 0, 0, 0);
+                const fechaHasta = new Date(Number(anio), Number(mes), 1, 0, 0, 0, 0);
+                where.fechaProgramada = {
+                    gte: fechaDesde,
+                    lt: fechaHasta,
+                };
+            }
+            else if (anio) {
+                const fechaDesde = new Date(Number(anio), 0, 1, 0, 0, 0, 0);
+                const fechaHasta = new Date(Number(anio) + 1, 0, 1, 0, 0, 0, 0);
+                where.fechaProgramada = {
+                    gte: fechaDesde,
+                    lt: fechaHasta,
+                };
+            }
+        }
+        const tareas = await prisma_1.prisma.tareaAsignada.findMany({
+            where,
+            select: {
+                id_tarea_asignada: true,
+            },
+        });
+        if (!tareas.length) {
+            return res.status(200).json({
+                ok: true,
+                message: "No se encontraron tareas desactivadas para reactivar.",
+                count: 0,
+                tareas: [],
+            });
+        }
+        const ids = tareas.map((t) => t.id_tarea_asignada);
+        const dataUpdate = {
+            estado: "PENDIENTE",
+            fechaComplecion: null,
+        };
+        if (typeof comentario === "string" && comentario.trim()) {
+            dataUpdate.comentarios = comentario.trim();
+        }
+        const result = await prisma_1.prisma.tareaAsignada.updateMany({
+            where: {
+                id_tarea_asignada: { in: ids },
+            },
+            data: dataUpdate,
+        });
+        return res.status(200).json({
+            ok: true,
+            message: "Tareas reactivadas correctamente.",
+            count: result.count,
+            tareas: ids,
+        });
+    }
+    catch (error) {
+        next(error);
+    }
+}
 //# sourceMappingURL=tareas.Controller.js.map

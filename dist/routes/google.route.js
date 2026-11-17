@@ -23,6 +23,15 @@ r.get("/shared/:year", auth_middleware_1.authGuard, auth_controller_1.listMyShar
 r.get("/folder/:id/files", auth_middleware_1.authGuard, auth_controller_1.listFilesInFolder);
 r.post("/folder/:id/upload", auth_middleware_1.authGuard, upload.single("file"), auth_controller_1.uploadToFolder);
 // Sync de áreas según grupos de Google
-r.post("/trabajadores/sync-areas", auth_middleware_1.authGuard, auth_controller_1.syncAreasFromGroups);
+//
+// Solo supervisor o admin. Antes bastaba con estar autenticado, y el handler
+// acepta `clearOthers` del body: con `{"clearOthers": true}` hace un
+// `updateMany` que pone `areaInterna = null` a todo trabajador que no este en
+// los grupos. De `areaInterna` sale el rol (`roleFromArea`), asi que un
+// usuario cualquiera podia dejar sin rol a toda la empresa, admins incluidos.
+//
+// El cron no pasa por aqui: llama a `syncAreasFromGroupsCore` directamente
+// (`app.ts`), asi que este guard no lo afecta.
+r.post("/trabajadores/sync-areas", auth_middleware_1.authGuard, auth_middleware_1.requireSupervisorOrAdmin, auth_controller_1.syncAreasFromGroups);
 exports.default = r;
 //# sourceMappingURL=google.route.js.map

@@ -8,10 +8,12 @@ export type AuthJwtPayload = {
   id: number;
   nombre: string;
   email: string;
-  role: Role;                 // ✅ obligatorio para calzar con express.d.ts
+  role: Role;                 // obligatorio para calzar con express.d.ts
   agenteId?: number | null;
   isSupervisorOrAdmin?: boolean;
   isAdmin?: boolean;
+  /** Ver la nota en auth.middleware.ts: es solo para la UI. */
+  puedeVerInformes?: boolean;
 };
 
 const JWT_SECRET = process.env.JWT_SECRET || "cambiar_esto_en_prod";
@@ -28,8 +30,8 @@ export const requireAuth = (req: Request, res: Response, next: NextFunction) => 
 
     const decoded = jwt.verify(token, JWT_SECRET) as AuthJwtPayload;
 
-    req.user = decoded; // ✅ calza con la definición global
-    req.token = token;  // ✅ si tu global también define token
+    req.user = decoded; // calza con la definición global
+    req.token = token;  // si tu global también define token
 
     return next();
   } catch (error) {

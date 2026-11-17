@@ -1,12 +1,86 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.crearDesdePlantillaMasivo = crearDesdePlantillaMasivo;
+exports.crearDesdePlantillaMasivoSafe = crearDesdePlantillaMasivoSafe;
+exports.reasignarClienteYTransferirTareas = reasignarClienteYTransferirTareas;
 const client_1 = require("@prisma/client");
 const prisma = new client_1.PrismaClient();
 function asISODate(v) {
     const d = new Date(String(v ?? ""));
     return Number.isFinite(d.getTime()) ? d : null;
 }
+/**
+ * ✅ NUEVO: parse flexible para fechaProgramada
+ * - acepta ISO completo
+ * - acepta YYYY-MM-DD (lo interpreta como UTC 00:00)
+ */
+function asFlexibleDate(v) {
+    if (v == null)
+        return null;
+    const s = String(v).trim();
+    if (!s)
+        return null;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+        const d = new Date(`${s}T00:00:00.000Z`);
+        return Number.isFinite(d.getTime()) ? d : null;
+    }
+    const d = new Date(s);
+    return Number.isFinite(d.getTime()) ? d : null;
+}
+function cleanStringArray(v) {
+    return Array.isArray(v) ? v.map((x) => String(x).trim()).filter(Boolean) : [];
+}
+function cleanNumberArray(v) {
+    if (!Array.isArray(v))
+        return [];
+    const nums = v
+        .map((x) => Number(x))
+        .filter((n) => Number.isFinite(n) && n > 0);
+    return Array.from(new Set(nums));
+}
+function normEmail(v) {
+    return String(v ?? "").trim().toLowerCase();
+}
+/**
+ * ✅ helper mínimo: valida que trabajador exista
+ */
+async function ensureTrabajadorExists(id) {
+    const t = await prisma.trabajador.findUnique({
+        where: { id_trabajador: id },
+        select: { id_trabajador: true, email: true, carpetaDriveCodigo: true, areaInterna: true },
+    });
+    return t;
+}
+/**
+ * ✅ Recalcula codigoCartera desde el nuevo agente.
+ * REEMPLAZA esta lógica por tu función real (getCodigoCarteraFromAgente).
+ *
+ * Opciones típicas:
+ * - usar carpetaDriveCodigo del trabajador
+ * - usar areaInterna + algún correlativo
+ * - usar reglas por área/rol
+ */
+async function getCodigoCarteraFromAgente(agenteId) {
+    const t = await prisma.trabajador.findUnique({
+        where: { id_trabajador: agenteId },
+        select: { carpetaDriveCodigo: true, areaInterna: true, email: true },
+    });
+    if (!t)
+        return null;
+    // Si ya tienes un "codigo" en el trabajador, úsalo
+    if (t.carpetaDriveCodigo)
+        return t.carpetaDriveCodigo;
+    // fallback simple por área (ajusta a tu negocio)
+    if (t.areaInterna)
+        return `${String(t.areaInterna)}/A01`;
+    // último fallback: por email
+    if (t.email)
+        return `GEN/${t.email.split("@")[0].slice(0, 10).toUpperCase()}`;
+    return null;
+}
+// =====================
+// ORIGINAL (lo dejas igual)
+// =====================
 async function crearDesdePlantillaMasivo(req, res) {
     try {
         const { rutClientes, plantillaIds, trabajadorId, fechaProgramada, skipDuplicates = true } = req.body ?? {};
@@ -68,6 +142,209 @@ async function crearDesdePlantillaMasivo(req, res) {
     catch (e) {
         console.error("crearDesdePlantillaMasivo error:", e);
         return res.status(500).json({ error: "Error interno creando tareas masivas" });
+    }
+}
+// =====================
+// ✅ SAFE (tolerante + reprograma + debug)
+// =====================
+async function crearDesdePlantillaMasivoSafe(req, res) {
+    try {
+        const body = req.body ?? {};
+        const ruts = cleanStringArray(body.rutClientes);
+        const plantillas = cleanNumberArray(body.plantillaIds);
+        const tId = Number(body.trabajadorId);
+        const fecha = asFlexibleDate(body.fechaProgramada);
+        const debug = {
+            got: {
+                rutClientesLen: ruts.length,
+                plantillaIdsLen: plantillas.length,
+                trabajadorIdRaw: body.trabajadorId,
+                trabajadorIdNum: tId,
+                fechaProgramadaRaw: body.fechaProgramada,
+                fechaProgramadaParsed: fecha ? fecha.toISOString() : null,
+            },
+        };
+        if (!ruts.length)
+            return res.status(400).json({ error: "rutClientes requerido", ...debug });
+        if (!plantillas.length)
+            return res.status(400).json({ error: "plantillaIds requerido", ...debug });
+        if (!Number.isFinite(tId) || tId <= 0)
+            return res.status(400).json({ error: "trabajadorId inválido", ...debug });
+        if (!fecha)
+            return res.status(400).json({ error: "fechaProgramada inválida", ...debug });
+        const trabajador = await prisma.trabajador.findUnique({
+            where: { id_trabajador: tId },
+            select: { id_trabajador: true, nombre: true, email: true },
+        });
+        if (!trabajador) {
+            return res.status(404).json({ error: "Trabajador no existe", ...debug });
+        }
+        const plantillasFound = await prisma.tareaPlantilla.findMany({
+            where: { id_tarea_plantilla: { in: plantillas } },
+            select: { id_tarea_plantilla: true },
+        });
+        const validPlantillaIds = new Set(plantillasFound.map((p) => p.id_tarea_plantilla));
+        const missing = plantillas.filter((id) => !validPlantillaIds.has(id));
+        if (missing.length) {
+            return res.status(400).json({
+                error: "Hay plantillas inválidas",
+                missing,
+                ...debug,
+            });
+        }
+        let creadas = 0;
+        let actualizadas = 0;
+        let omitidas = 0;
+        for (const rut of ruts) {
+            for (const pid of plantillas) {
+                const result = await prisma.tareaAsignada.upsert({
+                    where: {
+                        rutCliente_tareaPlantillaId_fechaProgramada: {
+                            rutCliente: rut,
+                            tareaPlantillaId: pid,
+                            fechaProgramada: fecha,
+                        },
+                    },
+                    update: {
+                        trabajadorId: tId,
+                        estado: client_1.EstadoTarea.PENDIENTE,
+                    },
+                    create: {
+                        rutCliente: rut,
+                        tareaPlantillaId: pid,
+                        trabajadorId: tId,
+                        estado: client_1.EstadoTarea.PENDIENTE,
+                        fechaProgramada: fecha,
+                    },
+                });
+                if (result.createdAt.getTime() === result.updatedAt.getTime()) {
+                    creadas++;
+                }
+                else {
+                    actualizadas++;
+                }
+            }
+        }
+        return res.json({
+            mensaje: "Tareas procesadas correctamente",
+            resumen: {
+                total_pares: ruts.length * plantillas.length,
+                tareas_creadas: creadas,
+                tareas_actualizadas: actualizadas,
+                tareas_omitidas: omitidas,
+            },
+            responsable: trabajador.nombre,
+            fecha_programada: fecha.toISOString().split("T")[0],
+            debug,
+        });
+    }
+    catch (e) {
+        console.error("crearDesdePlantillaMasivoSafe error:", e);
+        return res.status(500).json({
+            error: "Error interno procesando tareas masivas (SAFE)",
+        });
+    }
+}
+// =====================
+// ✅ NUEVO: Reasignar cliente a trabajador + recalcular codigoCartera + mover tareas
+// Endpoint sugerido:
+// POST /tareas/masivo/reasignar-cliente
+//
+// body:
+// {
+//   "rutCliente": "78.163.795-5",
+//   "agenteId": 4,
+//   "moveAllTasks": false,         // opcional: por defecto false (solo abiertas)
+//   "includeVencida": true         // opcional: por defecto true
+// }
+// =====================
+async function reasignarClienteYTransferirTareas(req, res) {
+    try {
+        const body = req.body ?? {};
+        const rutCliente = String(body.rutCliente ?? "").trim();
+        const agenteId = Number(body.agenteId);
+        const moveAllTasks = String(body.moveAllTasks ?? "false").toLowerCase() === "true";
+        const includeVencida = String(body.includeVencida ?? "true").toLowerCase() !== "false";
+        const debug = {
+            got: {
+                rutCliente,
+                agenteIdRaw: body.agenteId,
+                agenteIdNum: agenteId,
+                moveAllTasks,
+                includeVencida,
+            },
+        };
+        if (!rutCliente)
+            return res.status(400).json({ error: "rutCliente requerido", ...debug });
+        if (!Number.isFinite(agenteId) || agenteId <= 0)
+            return res.status(400).json({ error: "agenteId inválido", ...debug });
+        const agente = await ensureTrabajadorExists(agenteId);
+        if (!agente)
+            return res.status(404).json({ error: "Trabajador no existe", ...debug });
+        const cliente = await prisma.cliente.findUnique({
+            where: { rut: rutCliente },
+            select: {
+                id: true,
+                rut: true,
+                razonSocial: true,
+                agenteId: true,
+                codigoCartera: true,
+                activo: true,
+            },
+        });
+        if (!cliente)
+            return res.status(404).json({ error: "Cliente no encontrado", ...debug });
+        if (cliente.activo === false)
+            return res.status(400).json({ error: "Cliente está inactivo", ...debug });
+        const codigoCartera = await getCodigoCarteraFromAgente(agenteId);
+        const OPEN_STATES = includeVencida
+            ? [client_1.EstadoTarea.PENDIENTE, client_1.EstadoTarea.EN_PROCESO, client_1.EstadoTarea.VENCIDA]
+            : [client_1.EstadoTarea.PENDIENTE, client_1.EstadoTarea.EN_PROCESO];
+        const txResult = await prisma.$transaction(async (tx) => {
+            // 1) Update cliente (agenteId + codigoCartera)
+            const updatedCliente = await tx.cliente.update({
+                where: { rut: rutCliente },
+                data: {
+                    agenteId,
+                    codigoCartera,
+                },
+                select: {
+                    id: true,
+                    rut: true,
+                    razonSocial: true,
+                    agenteId: true,
+                    codigoCartera: true,
+                    updatedAt: true,
+                },
+            });
+            // 2) Move tareas
+            const whereTareas = { rutCliente };
+            if (!moveAllTasks)
+                whereTareas.estado = { in: OPEN_STATES };
+            const moved = await tx.tareaAsignada.updateMany({
+                where: whereTareas,
+                data: { trabajadorId: agenteId },
+            });
+            return { updatedCliente, movedCount: moved.count };
+        });
+        return res.json({
+            mensaje: "Cliente reasignado y tareas transferidas",
+            cliente: {
+                rut: txResult.updatedCliente.rut,
+                razonSocial: txResult.updatedCliente.razonSocial,
+                agenteId: txResult.updatedCliente.agenteId,
+                codigoCartera: txResult.updatedCliente.codigoCartera,
+            },
+            tareas: {
+                movidas: txResult.movedCount,
+                regla: moveAllTasks ? "todas" : `abiertas(${OPEN_STATES.join(",")})`,
+            },
+            debug,
+        });
+    }
+    catch (e) {
+        console.error("reasignarClienteYTransferirTareas error:", e);
+        return res.status(500).json({ error: "Error interno reasignando cliente y moviendo tareas" });
     }
 }
 //# sourceMappingURL=tareas.masivo.controller.js.map

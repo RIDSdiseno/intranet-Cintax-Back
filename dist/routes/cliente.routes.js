@@ -1,11 +1,20 @@
 "use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 // src/routes/cliente.routes.ts
 const express_1 = require("express");
 const cliente_controller_1 = require("../controllers/cliente.controller");
 const requireAuth_1 = require("../middlewares/requireAuth");
 const clienteTareaExclusion_controller_1 = require("../controllers/clienteTareaExclusion.controller");
+const clientes_masivo_excel_controller_1 = require("../controllers/clientes.masivo.excel.controller");
+const multer_1 = __importDefault(require("multer"));
 const router = (0, express_1.Router)();
+const upload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage() });
+// ✅ Carga masiva Excel
+// POST /api/clientes/masivo-excel  (form-data: archivo)
+router.post("/masivo-excel", requireAuth_1.requireAuth, upload.single("archivo"), clientes_masivo_excel_controller_1.cargarClientesDesdeExcel);
 // ✅ Listar (con filtros) + Crear
 router.get("/", requireAuth_1.requireAuth, cliente_controller_1.listClientes); // GET /api/clientes
 router.post("/", requireAuth_1.requireAuth, cliente_controller_1.createCliente); // POST /api/clientes

@@ -1,4 +1,9 @@
 "use strict";
+// src/routes/mailbox.routes.ts
+//
+// DESMONTADO (2026-11-13): este router ya no se monta. La linea que lo
+// montaba esta comentada en `src/routes.ts`, con el motivo y como revertirlo.
+// Nada de lo que hay aqui se ejecuta.
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -13,6 +18,8 @@ router.use(auth_middleware_1.authGuard);
 router.get("/threads", mailbox_controller_1.listMailboxThreads);
 router.get("/threads/:threadId", mailbox_controller_1.getMailboxThread);
 router.post("/threads/:threadId/reply", upload.array("attachments", 10), mailbox_controller_1.replyMailboxThread);
-router.post("/sync", mailbox_controller_1.syncMailboxInbox);
+// La ingesta de correo -> tickets vive en POST /api/tickets/sync
+// (src/modules/tickets/email/ingestInbox.ts). La que estaba aqui solo
+// agregaba mensajes a tickets ya existentes y descartaba los correos nuevos.
 exports.default = router;
 //# sourceMappingURL=mailbox.routes.js.map

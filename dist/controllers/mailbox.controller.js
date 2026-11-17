@@ -1,6 +1,19 @@
 "use strict";
+// src/controllers/mailbox.controller.ts
+//
+// ====================================================================
+// CODIGO DESMONTADO — NO SE EJECUTA (desde 2026-11-13)
+// ====================================================================
+// Webmail crudo de la casilla de soporte, anterior a la ticketera. Su router
+// esta comentado en `src/routes.ts`, asi que ninguna de estas funciones
+// corre: `/api/mailbox/*` responde 404.
+//
+// Importa si llegaste buscando `markThreadAsRead`: la llamada de mas abajo
+// **no se ejecuta**. La unica ingesta viva es
+// `src/modules/tickets/email/ingestInbox.ts`, que por defecto no marca nada.
+// ====================================================================
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.syncMailboxInbox = exports.replyMailboxThread = exports.getMailboxThread = exports.listMailboxThreads = void 0;
+exports.replyMailboxThread = exports.getMailboxThread = exports.listMailboxThreads = void 0;
 const prisma_1 = require("../lib/prisma");
 const gmailDelegated_service_1 = require("../services/gmailDelegated.service");
 function clampInt(v, def, min, max) {
@@ -81,7 +94,7 @@ const listMailboxThreads = async (req, res) => {
         const qBase = req.query.q || "in:inbox";
         const unreadOnly = String(req.query.unreadOnly ?? "").toLowerCase() === "true";
         const includeSpamTrash = String(req.query.includeSpamTrash ?? "").toLowerCase() === "true";
-        // ✅ includeSpamTrash: usa in:anywhere (incluye spam/trash)
+        // includeSpamTrash: usa in:anywhere (incluye spam/trash)
         const base = includeSpamTrash ? qBase.replace(/\bin:inbox\b/g, "in:anywhere") : qBase;
         const q = unreadOnly ? `${base} is:unread` : base;
         const maxResults = clampInt(req.query.max ?? 10, 10, 1, 50);
@@ -256,119 +269,4 @@ const replyMailboxThread = async (req, res) => {
     }
 };
 exports.replyMailboxThread = replyMailboxThread;
-/** =========================
- *  POST /mailbox/sync
- * ========================= */
-const syncMailboxInbox = async (req, res) => {
-    try {
-        const days = Number(req.query.days ?? 7);
-        const unreadOnly = String(req.query.unreadOnly ?? "true").toLowerCase() === "true";
-        const markRead = String(req.query.markRead ?? "true").toLowerCase() === "true";
-        const maxThreads = Math.max(1, Math.min(50, Number(req.query.maxThreads ?? 25)));
-        const qParts = [`in:inbox`, `newer_than:${Number.isFinite(days) ? days : 7}d`];
-        if (unreadOnly)
-            qParts.push("is:unread");
-        const q = qParts.join(" ");
-        const { threads } = await (0, gmailDelegated_service_1.listTicketThreads)({ q, maxResults: maxThreads });
-        const allowedDomain = process.env.GOOGLE_ALLOWED_DOMAIN || "cintax.cl";
-        let scannedThreads = 0;
-        let matchedTickets = 0;
-        let createdMessages = 0;
-        let skippedMessages = 0;
-        let skippedThreadsNoTicket = 0;
-        for (const th of threads ?? []) {
-            const threadId = th.id;
-            if (!threadId)
-                continue;
-            scannedThreads++;
-            const ticket = await prisma_1.prisma.ticket.findFirst({
-                where: { gmailThreadId: threadId },
-            });
-            if (!ticket?.id_ticket) {
-                skippedThreadsNoTicket++;
-                continue;
-            }
-            matchedTickets++;
-            const thread = await (0, gmailDelegated_service_1.getTicketThread)(threadId);
-            const msgs = (thread.messages ?? []).map(gmailDelegated_service_1.parseGmailMessage);
-            for (const m of msgs) {
-                const gmailMessageId = m.gmailId ?? null;
-                if (gmailMessageId) {
-                    try {
-                        const exists = await prisma_1.prisma.ticketMessage.findFirst({
-                            where: { gmailMessageId },
-                        });
-                        if (exists) {
-                            skippedMessages++;
-                            continue;
-                        }
-                    }
-                    catch {
-                        // si no existe campo/tabla, sigue
-                    }
-                }
-                // Heurística dirección según dominio interno
-                const fromEmail = extractEmailFromHeader(m.from) ?? (m.from ?? "");
-                const fromLower = String(fromEmail).toLowerCase();
-                const direction = fromLower.endsWith(`@${allowedDomain}`) ? "OUTBOUND" : "INBOUND";
-                try {
-                    await prisma_1.prisma.ticketMessage.create({
-                        data: {
-                            ticketId: ticket.id_ticket,
-                            type: "PUBLIC_REPLY",
-                            direction,
-                            gmailMessageId,
-                            subject: m.subject ?? ticket.subject ?? "",
-                            bodyText: m.bodyText ?? "",
-                            bodyHtml: m.bodyHtml ?? "",
-                            toEmail: m.to ?? null,
-                            cc: m.cc ?? null,
-                            // tu schema no tiene fromEmail, etc. (si lo agregas, aquí se completa)
-                        },
-                    });
-                    createdMessages++;
-                }
-                catch {
-                    try {
-                        await prisma_1.prisma.ticketMessage.create({
-                            data: {
-                                ticketId: ticket.id_ticket,
-                                type: "PUBLIC_REPLY",
-                                subject: m.subject ?? ticket.subject ?? "",
-                                bodyText: m.bodyText ?? "",
-                                bodyHtml: m.bodyHtml ?? "",
-                            },
-                        });
-                        createdMessages++;
-                    }
-                    catch {
-                        skippedMessages++;
-                    }
-                }
-            }
-            if (markRead) {
-                try {
-                    await (0, gmailDelegated_service_1.markThreadAsRead)(threadId);
-                }
-                catch {
-                    // no crítico
-                }
-            }
-        }
-        return res.json({
-            ok: true,
-            q,
-            scannedThreads,
-            matchedTickets,
-            skippedThreadsNoTicket,
-            createdMessages,
-            skippedMessages,
-        });
-    }
-    catch (err) {
-        console.error("syncMailboxInbox error:", err);
-        return res.status(500).json({ ok: false, error: err?.message ?? "Error" });
-    }
-};
-exports.syncMailboxInbox = syncMailboxInbox;
 //# sourceMappingURL=mailbox.controller.js.map

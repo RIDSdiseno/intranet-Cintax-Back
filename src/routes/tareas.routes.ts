@@ -2,6 +2,27 @@
 import { Router } from "express";
 import multer from "multer";
 import { requireAuth } from "../middlewares/requireAuth";
+import { requireSupervisorOrAdmin } from "../middlewares/auth.middleware";
+
+// `requireSupervisorOrAdmin` va en las rutas administrativas: plantillas,
+// creacion masiva, supervision y metricas. Hasta ahora todas pedian solo
+// `requireAuth`, asi que cualquier trabajador con sesion podia llamarlas a
+// mano —borrar una plantilla con todas sus tareas, reasignar clientes, leer
+// las metricas de la empresa— aunque el front le escondiera la pantalla.
+//
+// La regla no es nueva: `/supervisor`, `/cierre-tareas` y `/task-assignment`
+// ya estan tras `SupervisorRoute` en el front. Lo que faltaba era que el
+// servidor la aplicara, porque esconder un boton no impide llamar a la URL.
+//
+// El guard acepta a los mismos que `SupervisorRoute` (rol ADMIN o SUPERVISOR,
+// o el flag `isSupervisorOrAdmin`, que sale de SUPERVISOR_OR_ADMIN_EMAILS),
+// asi que nadie que hoy pueda abrir la pantalla recibe un 403.
+//
+// **No lo llevan las rutas que usa un agente normal** desde `/tareas`:
+// `mis-ruts`, `por-rut`, `por-plantilla`, el GET de `plantillas` y el cambio
+// de estado. Ahi el problema es otro —que el id o el `trabajadorId` que
+// manda el cliente no se comprueba contra el dueno— y se arregla dentro del
+// controlador, no con un guard.
 import { CorreoTareasController } from "../controllers/correoTareas.controller";
 
 // ✅ Controlador de tareas
@@ -97,7 +118,7 @@ router.post("/por-ruts", requireAuth, getTareasPorRuts);
 router.get("/plantillas", requireAuth, getPlantillas);
 
 // Crear plantilla
-router.post("/plantillas", requireAuth, crearPlantilla);
+router.post("/plantillas", requireAuth, requireSupervisorOrAdmin, crearPlantilla);
 
 // Ruta original de tareas por plantilla
 router.get("/por-plantilla/:idPlantilla", requireAuth, getTareasPorPlantilla);
@@ -107,23 +128,37 @@ router.get("/por-plantilla/:idPlantilla", requireAuth, getTareasPorPlantilla);
 router.get(
   "/supervision/por-plantilla/:idPlantilla",
   requireAuth,
+  requireSupervisorOrAdmin,
   getTareasPorPlantillaSupervision
 );
 
 // Eliminar plantilla con tareas
-router.delete("/plantillas/:id", requireAuth, eliminarPlantillaConTareas);
+// Borra la plantilla y, con ella, todas sus tareas asignadas, notificaciones
+// y exclusiones. Es la ruta mas destructiva del modulo.
+router.delete(
+  "/plantillas/:id",
+  requireAuth,
+  requireSupervisorOrAdmin,
+  eliminarPlantillaConTareas
+);
 
 // =====================
 // Asignación masiva desde plantilla
 // =====================
 
 // ✅ Ruta existente (la que ya usa tu front hoy)
-router.post("/crear-desde-plantilla", requireAuth, crearTareasDesdePlantilla);
+router.post(
+  "/crear-desde-plantilla",
+  requireAuth,
+  requireSupervisorOrAdmin,
+  crearTareasDesdePlantilla
+);
 
 // ✅ NUEVO: masivo "directo" (tu controller createMany)
 router.post(
   "/masivo/crear-desde-plantilla",
   requireAuth,
+  requireSupervisorOrAdmin,
   crearDesdePlantillaMasivo
 );
 
@@ -131,6 +166,7 @@ router.post(
 router.post(
   "/masivo/crear-desde-plantilla-safe",
   requireAuth,
+  requireSupervisorOrAdmin,
   crearDesdePlantillaMasivoSafe
 );
 
@@ -139,9 +175,12 @@ router.post(
 // POST /tareas/masivo/reasignar-cliente
 // body: { rutCliente, agenteId, moveAllTasks?, includeVencida? }
 // =====================
+// La operacion equivalente en clientes (`PATCH /api/clientes/:id/asignar-agente`)
+// ya exige supervisor. Sin este guard, esta ruta la rodeaba.
 router.post(
   "/masivo/reasignar-cliente",
   requireAuth,
+  requireSupervisorOrAdmin,
   reasignarClienteYTransferirTareas
 );
 
@@ -161,6 +200,7 @@ router.post(
 router.post(
   "/masivo/excel",
   requireAuth,
+  requireSupervisorOrAdmin,
   uploadExcel.single("archivo"),
   cargarTareasDesdeExcel
 );
@@ -173,12 +213,18 @@ router.post(
 router.patch("/:id/estado", requireAuth, actualizarEstado);
 
 // Resumen supervisión (front: /tareas/supervision/resumen)
-router.get("/supervision/resumen", requireAuth, getResumenSupervision);
+router.get(
+  "/supervision/resumen",
+  requireAuth,
+  requireSupervisorOrAdmin,
+  getResumenSupervision
+);
 
 // ✅ NUEVO: completar/cerrar tareas como supervisor
 router.post(
   "/supervision/completar",
   requireAuth,
+  requireSupervisorOrAdmin,
   completarTareasComoSupervisor
 );
 
@@ -186,6 +232,7 @@ router.post(
 router.patch(
   "/supervision/desactivar",
   requireAuth,
+  requireSupervisorOrAdmin,
   desactivarTareasSupervision
 );
 
@@ -200,10 +247,20 @@ router.post("/:id/archivos", requireAuth, upload.single("archivo"), subirArchivo
 // =====================
 
 // Métricas globales / por área / por mes
-router.get("/supervision/metricas", requireAuth, getMetricasSupervision);
+router.get(
+  "/supervision/metricas",
+  requireAuth,
+  requireSupervisorOrAdmin,
+  getMetricasSupervision
+);
 
 // Métricas detalladas por agente
-router.get("/supervision/metricas/agente/:id", requireAuth, getMetricasAgente);
+router.get(
+  "/supervision/metricas/agente/:id",
+  requireAuth,
+  requireSupervisorOrAdmin,
+  getMetricasAgente
+);
 
 // =====================
 // Estado "no aplica" + editor de tareas
@@ -236,9 +293,15 @@ router.post(
 router.patch(
   "/supervision/reactivar",
   requireAuth,
+  requireSupervisorOrAdmin,
   reactivarTareasSupervision
 );
 
-router.post("/desactivadas", requireAuth, getTareasDesactivadas);
+router.post(
+  "/desactivadas",
+  requireAuth,
+  requireSupervisorOrAdmin,
+  getTareasDesactivadas
+);
 
 export default router;

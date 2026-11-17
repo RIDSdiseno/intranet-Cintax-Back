@@ -8,5 +8,6 @@ const router = (0, express_1.Router)();
 router.get("/trabajadores", auth_middleware_1.authGuard, trabajador_controller_1.listTrabajadores);
 // 🔒 Update: solo supervisor/admin (doble seguro: middleware + controller)
 router.patch("/trabajadores/:id", auth_middleware_1.authGuard, auth_middleware_1.requireSupervisorOrAdmin, trabajador_controller_1.updateTrabajador);
+router.get("/trabajadores/lite", auth_middleware_1.authGuard, trabajador_controller_1.listTrabajadoresLite);
 exports.default = router;
 //# sourceMappingURL=trabajador.routes.js.map
